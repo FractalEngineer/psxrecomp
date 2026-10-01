@@ -578,6 +578,13 @@ struct RuntimeConfig {
     int                   video_aspect_num = 4;
     int                   video_aspect_den = 3;
 
+    // fov_scale: VR perspective multiplier on the GTE projection distance H
+    // (default 1.0 = faithful). The GTE computes fov = 2*atan(w/(2H)); scaling
+    // H by 1/fov_scale widens the field of view. Applies to every GTE-projected
+    // vertex; the renderer is untouched. Implemented in runtime/src/gte.cpp
+    // (gte_set_fov_scale). env PSX_GTE_FOV_SCALE overrides at runtime.
+    double                video_fov_scale = 1.0;
+
     // ---- [audio] block ----
     // buffer_ms: steady-state host playback cushion. The ecosystem default
     // remains 180 ms because it survives long streamed-stage production gaps;

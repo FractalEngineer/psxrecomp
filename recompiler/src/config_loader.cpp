@@ -762,6 +762,14 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             rt.video_aspect_num = n;
             rt.video_aspect_den = d;
         }
+        if (video.contains("fov_scale")) {
+            const auto v = toml::find<double>(video, "fov_scale");
+            if (!(v > 0.0) || v > 8.0)
+                throw std::runtime_error(fmt::format(
+                    "[video] fov_scale must be > 0 and <= 8 (1.0 = faithful): {}",
+                    v));
+            rt.video_fov_scale = v;
+        }
     }
 
     // Optional [audio] block.

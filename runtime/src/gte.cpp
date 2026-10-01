@@ -822,15 +822,6 @@ static int32_t gte_h_scaled(const GTEState* gte) {
     return (int32_t)h;
 }
 
-static const bool s_fov_env_loaded = []() {
-    const char* e = getenv("PSX_GTE_FOV_SCALE");
-    if (e && e[0]) {
-        double v = atof(e);
-        if (v > 0.0) gte_set_fov_scale(1000, (int)(v * 1000.0 + 0.5));
-    }
-    return true;
-}();
-
 // ---------------------------------------------------------------------------
 // RTPS — Perspective Transformation (internal, operates on given vertex V)
 //
