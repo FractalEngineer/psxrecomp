@@ -544,6 +544,8 @@ static uint64_t   s_gte_latch_seq = 0;
 static inline int gte_sxx(int32_t p){ int v=p&0xFFFF; return v>=0x8000? v-0x10000:v; }
 static inline int gte_syy(int32_t p){ int v=(p>>16)&0xFFFF; return v>=0x8000? v-0x10000:v; }
 
+static int32_t gte_h_scaled(const GTEState* gte);
+
 static void gte_rtp_record(const GTEState* g, uint32_t cmd) {
     if (s_gte_replay_sandbox) return;
     if (!s_gte_rtp_ring) {
@@ -558,7 +560,7 @@ static void gte_rtp_record(const GTEState* g, uint32_t cmd) {
     for (int i = 0; i < 3; i++) { e->V0[i]=g->V0[i]; e->V1[i]=g->V1[i]; e->V2[i]=g->V2[i]; }
     for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) e->RT[r*3+c]=g->RT[r][c];
     for (int i = 0; i < 3; i++) e->TR[i]=g->TR[i];
-    e->H=g->H; e->OFX=g->OFX; e->OFY=g->OFY;
+    e->H=(uint16_t)gte_h_scaled(g); e->OFX=g->OFX; e->OFY=g->OFY;
     e->SXY0=g->SXY[0]; e->SXY1=g->SXY[1]; e->SXY2=g->SXY[2];
     e->SZ1=g->SZ[1]; e->SZ2=g->SZ[2]; e->SZ3=g->SZ[3];
     e->FLAG=g->FLAG;
