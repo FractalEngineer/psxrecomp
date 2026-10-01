@@ -2,7 +2,6 @@
 #include "cpu_state.h"
 #include "nd_intro_ot.h"
 #include "pgxp.h"
-#include "gte_capture.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstdio>
@@ -896,17 +895,6 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
     int64_t sx = sx16 >> 16;
     int64_t sy = sy16 >> 16;
     gte->push_sxy(sx, sy);
-    if (gte_capture_enabled()) {
-        GteCaptureVertex capture;
-        capture.cam_x = gte->MAC1;
-        capture.cam_y = gte->MAC2;
-        capture.cam_z = gte->MAC3;
-        capture.scr_x = static_cast<int32_t>(static_cast<int16_t>(gte->SXY[2] & 0xFFFF));
-        capture.scr_y = static_cast<int32_t>(static_cast<int16_t>((gte->SXY[2] >> 16) & 0xFFFF));
-        capture.sz = gte->SZ[3];
-        capture.instr = instr;
-        gte_capture_vertex(&capture);
-    }
     if (!s_gte_replay_sandbox) {
         /* Bound the 16.16 transport so an extreme projection cannot wrap an
          * int32 and masquerade as a valid on-screen shadow. */
