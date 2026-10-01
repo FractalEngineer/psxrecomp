@@ -793,6 +793,42 @@ extern "C" void gte_set_display_aspect(int num, int den) {
 }
 
 // ---------------------------------------------------------------------------
+// VR: perspective (FOV) scale.
+//
+// The PS1 projection distance lives in GTE control register H; psx-spx:
+//     fov = 2*atan(screen_width / (2*H))
+// Scaling H scales FOV without touching guest code (guest-code patches cannot
+// change a statically recompiled constant). Identity (num==den) by default, so
+// the faithful path is unchanged. Set from PSX_GTE_FOV_SCALE (a float, e.g.
+// "1.5" widens the view 1.5x) or gte_set_fov_scale(num, den).
+// ---------------------------------------------------------------------------
+static int32_t s_h_scale_num = 1;
+static int32_t s_h_scale_den = 1;
+
+extern "C" void gte_set_fov_scale(int num, int den) {
+    if (num <= 0 || den <= 0) { s_h_scale_num = s_h_scale_den = 1; return; }
+    s_h_scale_num = num;
+    s_h_scale_den = den;
+}
+
+static int32_t gte_h_scaled(const GTEState* gte) {
+    if (s_h_scale_num == s_h_scale_den) return gte->H;
+    int64_t h = (int64_t)gte->H * s_h_scale_num / s_h_scale_den;
+    if (h < 1) h = 1;
+    if (h > 0xFFFF) h = 0xFFFF;
+    return (int32_t)h;
+}
+
+static const bool s_fov_env_loaded = []() {
+    const char* e = getenv("PSX_GTE_FOV_SCALE");
+    if (e && e[0]) {
+        double v = atof(e);
+        if (v > 0.0) gte_set_fov_scale((int)(v * 1000.0 + 0.5), 1000);
+    }
+    return true;
+}();
+
+// ---------------------------------------------------------------------------
 // RTPS — Perspective Transformation (internal, operates on given vertex V)
 //
 // Matches DuckStation/Beetle (psx-spx):
@@ -843,7 +879,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
     gte->push_sz(static_cast<int32_t>(mac3 >> 12));
 
     // Step 3: Perspective division
-    int32_t h_div_sz = gte_divide(gte->H, gte->SZ[3], gte->FLAG);
+    int32_t h_div_sz = gte_divide(gte_h_scaled(gte), gte->SZ[3], gte->FLAG);
 
     // Step 4: Project to screen coordinates. Squash X only when configured AND
     // this frame is being stretched — never on a 4:3-presented frame (FMV /
