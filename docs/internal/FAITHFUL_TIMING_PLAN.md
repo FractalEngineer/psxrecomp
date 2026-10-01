@@ -213,6 +213,12 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-10-02 (VR enhancement observability):** Added failure-site pass-call
+  counters and latched begin/checkpoint refusal inputs to TCP `render_pass_stats`.
+  Existing empty-plan `refused` semantics retained. Sandbox and watchdog rollback
+  tests pass, including refusal classification and persistence across success.
+  No guest timing model or generated code changed. Game GL reproduction pending.
+
 - **2026-10-01 — MMX6 adaptive framework integration.** The opt-in function
   filters from the MMX6 branch are being reconciled with the active-plan
   function-entry registry and master overlay store-PC forwarding. A handled

@@ -408,6 +408,12 @@ bits masked off) and page with `{"skip":N}` to read all of it.
 
 ## Rule when the server can't answer your question
 
+`render_pass_stats` also exposes `pass_attempts`, `argument_refused`,
+`status_refused`, `begin_refused`, `checkpoint_refused` and a latched
+`last_failure` with failure-site inputs and GL allocation diagnostics. The
+existing `refused` counter describes empty plans, not rejected pass calls.
+See [RENDER_PASSES.md](RENDER_PASSES.md#verifying-a-title) for field semantics.
+
 If an inspection need isn't covered by the existing commands, **do not fall back to printf or log files**. Instead:
 
 1. Add a handler in `runtime/src/debug_server.c` (native)
@@ -429,9 +435,9 @@ The TCP server is the canonical instrumentation surface. Rule 3 in `CLAUDE.md` i
 
 ## Complete command index (generated)
 
-**322 commands registered** — 309 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**323 commands registered** — 310 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-61 of 322 have prose above; **261 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+61 of 323 have prose above; **262 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -503,6 +509,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `dirty_insn_log` | ✓ |  |  |
 | `dirty_ram_stats` | ✓ |  | ✓ |
 | `dirty_ram_unsupported` | ✓ |  |  |
+| `disasm` | ✓ |  |  |
 | `disc_select` | ✓ |  |  |
 | `disp_ring` | ✓ |  |  |
 | `dispatch_check` | ✓ |  |  |
