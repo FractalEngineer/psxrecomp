@@ -1,0 +1,91 @@
+# Framework changes pending upstream review
+
+Updated: 2026-10-02. Development branch: `vr-dev`; push remote: `fork`.
+Reference upstream base: `3505f2a0` (`master`). The Medal of Honor project pins
+this branch through its framework submodule. This file inventories pending work;
+it does not assert upstream acceptance or stereo completion.
+
+## Render-pass refusal diagnostics
+
+Commits: `257a88b0` (implementation), `ee7a4afc` (live verification notes).
+
+Previously a rejected `psx_mod_render_pass()` returned zero without identifying
+which pre-callback gate failed. `render_pass_stats` now exposes `pass_attempts`,
+`argument_refused`, `status_refused`, `begin_refused`, `checkpoint_refused` and a
+latched `last_failure`. Existing `refused` still counts empty temporal plans.
+
+The failure record includes attempt/plan/cycle identifiers, requested rect and
+phase, rejection status, actual GL capture dimensions, scales, generation state,
+resource stage, framebuffer status and allocation-local GL errors. Successful
+calls preserve the last failure; session reset clears it. Checkpoint allocation
+failures are distinguished from GL begin failures. Instrumentation is exposed
+through the TCP debug server; the existing FBO-failure printf was removed.
+
+Files: `runtime/include/{gpu_gl_renderer,render_pass}.h`,
+`runtime/src/{gpu_gl_renderer,render_pass,debug_server}.c`, render-pass tests,
+`docs/RENDER_PASSES.md`, generated `docs/TCP_COMMANDS.md`, and timing session notes.
+The generated command index also picks up the previously unlisted `disasm` handler.
+
+Validation:
+
+- Render-pass sandbox and abort tests passed; guard checks passed.
+- TCP command index regeneration check passed; Medal of Honor OpenGL Debug build passed.
+- Live refusal record measured requested 512x240 versus capture history 256x240,
+  with both scales 1. The guard correctly refused; no allocator failure was measured.
+- A game-only hook at its gameplay render-wait entry produced 727 no-op passes
+  and verification checks with zero mismatches, aborts or pass-call refusals.
+  Two promoted baseline/pass pairs had zero differing decoded RGB pixels.
+
+Evidence lives in the game repo at `vr/proof/pass-diagnostics/`; game commit
+`5e938a3` contains the probe and receipts. These results prove no-op transactions,
+not a complete redraw or stereo. Allocation diagnostics record errors but do not
+change the existing `glTexImage2D` success policy. Live timeline comparison and
+draw/watchdog coverage remain in the game execution plan.
+
+Suggested PR scope: refusal diagnostics, tests and associated documentation.
+Keep game-specific hooks and stereo presentation out of this PR.
+
+## Guest disassembly over TCP
+
+Commits: `85c47e10`, `d58db909`, `c2ed6e55`.
+
+Adds `disasm addr=0x... count=N`, backed by a C/C++ shim using the existing
+instruction decoder. Follow-ups correct SPECIAL/R-type formatting and name GTE
+commands and COP2 registers. Includes runtime build integration and public header.
+The live draw-loop investigation uses this command; automated decoder-format
+coverage should be assessed before opening its separate PR.
+
+## Optional GTE projection-distance scale
+
+Commits: `82695b75`, `5633e868`, `bbd01ccf`, `39d478db`.
+
+Adds default-identity projection-distance scaling to GTE RTPS/RTPT, configured
+through `[video] fov_scale` or `PSX_GTE_FOV_SCALE` (environment takes precedence).
+A value greater than 1 divides effective H and widens perspective; it is not an
+exact multiplier of the angle in degrees. GTE trace records report effective H.
+Guest control-register storage is unchanged by this host projection enhancement.
+
+Review before PR: numerical edge cases, environment validation versus config
+validation, identity-path regression tests and documentation of trace semantics.
+This enhancement alone does not provide a stereo viewpoint.
+
+## Netplay-disabled link fix
+
+Commit: `ce63101f`.
+
+Adds missing `psx_lobby_online_count` and `psx_lobby_online_get` stubs for
+`PSX_NETPLAY=OFF`. Suitable for a small independent PR; validate both build modes.
+
+## Reverted experiment
+
+`2c919f08` added a GTE vertex-capture seam; `cec02977` reverted it. There is no
+remaining vertex-capture implementation in the branch diff. Exclude both from
+an upstream implementation PR.
+
+## Delivery convention
+
+Document every further framework change here with its purpose, affected API,
+validation and outstanding limitations. Push each commit to `fork/vr-dev` before
+updating and pushing the game submodule pin. Do not mix pending enhancements into
+faithful defaults. Stereo will need a separate simultaneous paired-image contract
+sharing transaction internals; no paired-eye API has been implemented yet.
