@@ -42,7 +42,7 @@ extern "C" int psx_disasm_one(uint32_t word, uint32_t addr, char* out, int cap) 
     } else if (d.is_load || d.is_store) {
         n = std::snprintf(out, (size_t)cap, "%-8s %s, %d(%s)", m, rn(d.rt),
                           (int)d.imm16, rn(d.rs));
-    } else if (d.format == InstrFormat::R) {
+    } else if (d.format == InstrFormat::R || d.format == InstrFormat::SPECIAL) {
         n = std::snprintf(out, (size_t)cap, "%-8s %s, %s, %s", m, rn(d.rd),
                           rn(d.rs), rn(d.rt));
     } else {
