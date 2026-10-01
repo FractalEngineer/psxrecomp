@@ -799,10 +799,11 @@ extern "C" void gte_set_display_aspect(int num, int den) {
 //
 // The PS1 projection distance lives in GTE control register H; psx-spx:
 //     fov = 2*atan(screen_width / (2*H))
-// Scaling H scales FOV without touching guest code (guest-code patches cannot
-// change a statically recompiled constant). Identity (num==den) by default, so
-// the faithful path is unchanged. Set from PSX_GTE_FOV_SCALE (a float, e.g.
-// "1.5" widens the view 1.5x) or gte_set_fov_scale(num, den).
+// gte_h_scaled applies H * num / den. A *FOV multiplier* v maps to
+// (num, den) = (1000, v*1000), i.e. H becomes H/v, so v > 1 widens the view.
+// Scaling H here avoids guest-code patches, which cannot change a statically
+// recompiled constant. Identity (num==den) by default, so the faithful path is
+// unchanged. Set from PSX_GTE_FOV_SCALE (float) or gte_set_fov_scale(num, den).
 // ---------------------------------------------------------------------------
 static int32_t s_h_scale_num = 1;
 static int32_t s_h_scale_den = 1;
@@ -825,7 +826,7 @@ static const bool s_fov_env_loaded = []() {
     const char* e = getenv("PSX_GTE_FOV_SCALE");
     if (e && e[0]) {
         double v = atof(e);
-        if (v > 0.0) gte_set_fov_scale((int)(v * 1000.0 + 0.5), 1000);
+        if (v > 0.0) gte_set_fov_scale(1000, (int)(v * 1000.0 + 0.5));
     }
     return true;
 }();
