@@ -217,7 +217,13 @@ on a fixed region -> next.
   counters and latched begin/checkpoint refusal inputs to TCP `render_pass_stats`.
   Existing empty-plan `refused` semantics retained. Sandbox and watchdog rollback
   tests pass, including refusal classification and persistence across success.
-  No guest timing model or generated code changed. Game GL reproduction pending.
+  No guest timing model or generated code changed. MoH live reproduction found
+  `capture_size` (request 512x240, history 256x240), before allocation. A game-owned
+  no-op probe at the loaded scene's main-thread render-wait boundary then produced
+  two matching baseline/pass PNG pairs and 727 state/VRAM verification checks with
+  zero mismatches. Evidence is in the game repo's `vr/proof/pass-diagnostics`.
+  This is capture/restore proof; complete scene redraw and live fingerprint/
+  watchdog checks remain open. No stereo timing conclusion is claimed.
 
 - **2026-10-01 — MMX6 adaptive framework integration.** The opt-in function
   filters from the MMX6 branch are being reconciled with the active-plan
