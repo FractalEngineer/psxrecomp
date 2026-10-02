@@ -1817,3 +1817,11 @@ docs/OPENXR_RENDERING.md and UPSTREAM_PENDING.md. Headset cadence remains open.
   zero mismatches; slot-5 reload generation 1 -> 2 and later pair recovery.
   TCP latched abort detail added; no faithful timing/input default changes.
   See UPSTREAM_PENDING.md.
+
+- **2026-10-03 (real tracked-hand delivery):** Quest 3/VDXR supplied 242 fresh,
+  valid non-synthetic right grip/aim samples over 30 seconds; ages 0..29ms.
+  Final XR counters: 6,805 submissions, zero failures. Adjacent TCP samples
+  establish delivery only; physical rifle alignment/user acceptance remains
+  pending. Verification off, no new rollback proof or headset cadence claim.
+  Framework documentation only; runtime tested at 35b209d4. Owned game closed.
+  See UPSTREAM_PENDING.md and game VR_WEAPON_QUEST_RECEIPT.json.

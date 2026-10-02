@@ -301,6 +301,18 @@ enemy health 6 -> 3.5 at SW 8004ACC0, with idle/turned-away controls unchanged.
 These are desktop producer/diagnostic controls, not actual Quest pose alignment
 or aiming acceptance. Compact receipts reside in the game docs/reverse.
 
+2026-10-03 real-device follow-up: Quest 3/VirtualDesktopXR provided 242 adjacent
+TCP hand/action/pad samples over 30 seconds. All right grip/aim snapshots were
+non-synthetic, focused, origin-valid, active and orientation/position-valid,
+with ages 0..29ms. Right trigger reached 1.0. Final read-only counters recorded
+6,805 XR submissions and zero failures; stereo recorded zero failed pairs or
+watchdogs. This establishes real action-space delivery, not physical weapon
+alignment, shot direction, headset-rate cadence or restore verification (verify
+was off). The native enemy-health slice began after health was already zero,
+so it supplies no damage/alignment control. Visual/user acceptance is pending.
+The game was closed. No framework runtime changes; tested binary uses 35b209d4.
+Compact game evidence: docs/reverse/VR_WEAPON_QUEST_RECEIPT.json.
+
 ## Render-pass rollback of nested mod callback context
 
 2026-10-03, vr-dev. A watchdog longjmp inside nested function filters skipped
