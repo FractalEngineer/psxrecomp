@@ -8146,8 +8146,14 @@ static void handle_openxr_input(int id,const char *json) {
     PSXModOpenXRInput s; psx_openxr_input_snapshot(&s);
     send_fmt("{\"id\":%d,\"ok\":true,\"sequence\":%llu,\"synthetic\":%u,"
              "\"focused\":%u,\"active\":[%u,%u],\"stick\":[[%.6f,%.6f],[%.6f,%.6f]],"
+             "\"trigger\":[%.6f,%.6f],\"squeeze\":[%.6f,%.6f],"
+             "\"trigger_active\":[%u,%u],\"squeeze_active\":[%u,%u],"
+             "\"buttons\":[%u,%u],\"buttons_active\":[%u,%u],"
              "\"p1_source\":%d}",id,(unsigned long long)s.sequence,s.synthetic,s.focused,
              s.active[0],s.active[1],s.stick[0][0],s.stick[0][1],s.stick[1][0],s.stick[1][1],
+             s.trigger[0],s.trigger[1],s.squeeze[0],s.squeeze[1],
+             s.trigger_active[0],s.trigger_active[1],s.squeeze_active[0],s.squeeze_active[1],
+             s.buttons[0],s.buttons[1],s.buttons_active[0],s.buttons_active[1],
              mod_controller_source_present(0));
 }
 /* Debug-only synthetic action sample; axes are signed thousandths [-1000,1000].
@@ -8167,6 +8173,24 @@ static void handle_openxr_input_override(int id,const char *json) {
         for(int i=0;i<4;i++) {
             if(a[i]<-1000 || a[i]>1000) { send_err(id,"axis must be -1000..1000");return; }
             s.stick[i/2][i%2]=(float)a[i]/1000;
+        }
+        const char *t[2]={"left_trigger","right_trigger"}, *g[2]={"left_squeeze","right_squeeze"};
+        const char *ta[2]={"left_trigger_active","right_trigger_active"};
+        const char *ga[2]={"left_squeeze_active","right_squeeze_active"};
+        const char *b[2]={"left_buttons","right_buttons"};
+        const char *ba[2]={"left_buttons_active","right_buttons_active"};
+        for(int e=0;e<2;e++) {
+            int trigger=json_get_int(json,t[e],0),squeeze=json_get_int(json,g[e],0);
+            int trigger_active=json_get_int(json,ta[e],1),squeeze_active=json_get_int(json,ga[e],1);
+            int buttons=json_get_int(json,b[e],0),buttons_active=json_get_int(json,ba[e],15);
+            if(trigger<0 || trigger>1000 || squeeze<0 || squeeze>1000 ||
+               trigger_active<0 || trigger_active>1 || squeeze_active<0 || squeeze_active>1 ||
+               buttons<0 || buttons>15 || buttons_active<0 || buttons_active>15) {
+                send_err(id,"trigger/squeeze must be 0..1000, activity 0|1, click masks 0..15");return;
+            }
+            s.trigger[e]=(float)trigger/1000;s.squeeze[e]=(float)squeeze/1000;
+            s.trigger_active[e]=(uint32_t)trigger_active;s.squeeze_active[e]=(uint32_t)squeeze_active;
+            s.buttons[e]=(uint32_t)buttons;s.buttons_active[e]=(uint32_t)buttons_active;
         }
         if(!psx_openxr_input_override(&s)) { send_err(id,"invalid synthetic input");return; }
     }

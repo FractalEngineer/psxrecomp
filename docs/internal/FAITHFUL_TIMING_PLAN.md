@@ -1784,3 +1784,11 @@ netplay/resim do not poll sources. No default source or guest timing/codegen
 changes. Neutral stereo controls match 96 guest fingerprint rows; synthetic axis
 and release controls and actual Quest/VDXR samples are documented in
 docs/OPENXR_RENDERING.md and UPSTREAM_PENDING.md. Headset cadence remains open.
+
+- **2026-10-02 (opt-in Touch combat input):** Added per-action trigger/grip and
+  click values/activity to the existing offline XR sample. Debug snapshots and
+  explicitly synthetic controls expose the new fields; eye replay does not poll.
+  Compiled-out input/mapping tests, guards, debug-less syntax, TCP index and XR
+  Debug/Release builds pass. Native game writer controls establish ammo and
+  stance effects; real controller buttons/focus/reconnect remain pending. No
+  faithful controller/timing defaults changed. See UPSTREAM_PENDING.md.

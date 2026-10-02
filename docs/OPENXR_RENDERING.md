@@ -109,3 +109,32 @@ These results do not establish headset-rate scheduling or calibrated turn speed.
 Sources: [OpenXR specification](https://registry.khronos.org/OpenXR/specs/1.0-khr/html/xrspec.html),
 [official SDK](https://github.com/KhronosGroup/OpenXR-SDK),
 [VDXR supported features](https://github.com/mbucchia/VirtualDesktop-OpenXR/wiki/Developers).
+
+## Touch combat inputs (2026-10-02)
+
+The same opt-in action set now includes float trigger/squeeze values and boolean
+primary, secondary, Menu and thumbstick-click actions. Touch X/A use PRIMARY=1,
+Y/B SECONDARY=2, left Menu=4 and stick click=8. Only the left Menu binding is
+suggested. Trigger and squeeze are [0,1] with independent active flags; clicks
+have separate active and pressed masks. `active[]` continues to mean thumbstick
+activity only. Buttons do not disappear solely because a stick is inactive.
+Mapping and analog thresholds belong to the game, not the framework.
+Bindings follow the [Khronos Touch interaction profile](https://registry.khronos.org/OpenXR/specs/1.0-khr/html/xrspec.html#_oculus_touch_controller_profile).
+
+PSXModOpenXRInput has appended fields; its struct_size contract still requires
+the current sizeof value. Consumers must rebuild against the updated header.
+Unavailable/unfocused/failed samples are fresh neutral values for every action;
+click values are intersected with action activity. Eye replay still never polls
+input. The backend suggests 13 bindings and attaches before session start.
+
+TCP openxr_input includes trigger/squeeze, their activity, and buttons plus
+buttons_active. Synthetic override accepts left_trigger/right_trigger and
+left_squeeze/right_squeeze in thousandths [0,1000], corresponding *_active flags
+0|1, and left_buttons/right_buttons plus *_active click masks [0,15]. These
+activity flags are independent of left_active/right_active (sticks). Default
+synthetic click/analog activity is enabled, with zero values; clear=1 releases.
+Overrides remain labelled synthetic=1 and validation is performed before change.
+
+Desktop tests exercise independent activity, invalid values, focus/clear/shutdown
+release and actual game-owned native ammo/stance writers. Real Touch button
+binding acceptance, focus-loss and reconnection remain pending device tests.

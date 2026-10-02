@@ -17,6 +17,13 @@ int psx_openxr_input_override(const PSXModOpenXRInput *input) {
         input->active[0]>1 || input->active[1]>1) return 0;
     for(int e=0;e<2;e++) for(int a=0;a<2;a++)
         if(!isfinite(input->stick[e][a]) || fabsf(input->stick[e][a])>1) return 0;
+    for(int e=0;e<2;e++) {
+        if(input->trigger_active[e]>1 || input->squeeze_active[e]>1 ||
+           (input->buttons[e] & ~PSX_MOD_XR_CLICKS) ||
+           (input->buttons_active[e] & ~PSX_MOD_XR_CLICKS) ||
+           !isfinite(input->trigger[e]) || input->trigger[e]<0 || input->trigger[e]>1 ||
+           !isfinite(input->squeeze[e]) || input->squeeze[e]<0 || input->squeeze[e]>1)return 0;
+    }
     s_injected=*input; s_input_override=1; return 1;
 }
 #endif
@@ -37,6 +44,7 @@ static XrSession s_session;
 static XrSpace s_space;
 static XrActionSet s_actions;
 static XrAction s_stick;
+static XrAction s_trigger,s_squeeze,s_click[4];
 static XrPath s_hand[2];
 static XrTime s_origin_reset_time;
 static XrSwapchain s_chain[2];
@@ -54,7 +62,7 @@ static int check(XrResult r,const char *stage) {
 }
 static int input_initialize(void) {
     XrActionSetCreateInfo set={XR_TYPE_ACTION_SET_CREATE_INFO};
-    strcpy(set.actionSetName,"locomotion"); strcpy(set.localizedActionSetName,"Locomotion");
+    strcpy(set.actionSetName,"gameplay"); strcpy(set.localizedActionSetName,"Gameplay");
     if(!check(xrCreateActionSet(s_instance,&set,&s_actions),"action_set"))return 0;
     if(!check(xrStringToPath(s_instance,"/user/hand/left",&s_hand[0]),"left_hand_path") ||
        !check(xrStringToPath(s_instance,"/user/hand/right",&s_hand[1]),"right_hand_path"))return 0;
@@ -63,13 +71,37 @@ static int input_initialize(void) {
     action.actionType=XR_ACTION_TYPE_VECTOR2F_INPUT;
     action.countSubactionPaths=2; action.subactionPaths=s_hand;
     if(!check(xrCreateAction(s_actions,&action,&s_stick),"stick_action"))return 0;
-    XrPath profile,paths[2];
-    if(!check(xrStringToPath(s_instance,"/interaction_profiles/oculus/touch_controller",&profile),"touch_profile") ||
-       !check(xrStringToPath(s_instance,"/user/hand/left/input/thumbstick",&paths[0]),"left_stick_path") ||
-       !check(xrStringToPath(s_instance,"/user/hand/right/input/thumbstick",&paths[1]),"right_stick_path"))return 0;
-    XrActionSuggestedBinding bindings[2]={{s_stick,paths[0]},{s_stick,paths[1]}};
+    action.actionType=XR_ACTION_TYPE_FLOAT_INPUT;
+    strcpy(action.actionName,"trigger");strcpy(action.localizedActionName,"Trigger");
+    if(!check(xrCreateAction(s_actions,&action,&s_trigger),"trigger_action"))return 0;
+    strcpy(action.actionName,"squeeze");strcpy(action.localizedActionName,"Grip squeeze");
+    if(!check(xrCreateAction(s_actions,&action,&s_squeeze),"squeeze_action"))return 0;
+    const char *names[4]={"primary","secondary","menu","stick_click"};
+    const char *labels[4]={"Primary button","Secondary button","Menu","Stick click"};
+    action.actionType=XR_ACTION_TYPE_BOOLEAN_INPUT;
+    for(int i=0;i<4;i++) {
+        strcpy(action.actionName,names[i]);strcpy(action.localizedActionName,labels[i]);
+        if(!check(xrCreateAction(s_actions,&action,&s_click[i]),names[i]))return 0;
+    }
+    XrPath profile;
+    if(!check(xrStringToPath(s_instance,"/interaction_profiles/oculus/touch_controller",&profile),"touch_profile"))return 0;
+    const char *paths[2][7]={
+        {"/user/hand/left/input/thumbstick","/user/hand/left/input/trigger/value",
+         "/user/hand/left/input/squeeze/value","/user/hand/left/input/x/click",
+         "/user/hand/left/input/y/click","/user/hand/left/input/menu/click",
+         "/user/hand/left/input/thumbstick/click"},
+        {"/user/hand/right/input/thumbstick","/user/hand/right/input/trigger/value",
+         "/user/hand/right/input/squeeze/value","/user/hand/right/input/a/click",
+         "/user/hand/right/input/b/click",NULL,"/user/hand/right/input/thumbstick/click"}};
+    XrAction actions[7]={s_stick,s_trigger,s_squeeze,s_click[0],s_click[1],s_click[2],s_click[3]};
+    XrActionSuggestedBinding bindings[13];uint32_t n=0;
+    for(int e=0;e<2;e++)for(int a=0;a<7;a++)if(paths[e][a]) {
+        bindings[n].action=actions[a];
+        if(!check(xrStringToPath(s_instance,paths[e][a],&bindings[n].binding),"touch_input_path"))return 0;
+        n++;
+    }
     XrInteractionProfileSuggestedBinding suggest={XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
-    suggest.interactionProfile=profile; suggest.countSuggestedBindings=2; suggest.suggestedBindings=bindings;
+    suggest.interactionProfile=profile; suggest.countSuggestedBindings=n; suggest.suggestedBindings=bindings;
     if(!check(xrSuggestInteractionProfileBindings(s_instance,&suggest),"touch_bindings"))return 0;
     XrSessionActionSetsAttachInfo attach={XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
     attach.countActionSets=1; attach.actionSets=&s_actions;
@@ -198,6 +230,7 @@ void psx_openxr_shutdown(void) {
     if(s_space)xrDestroySpace(s_space);s_space=XR_NULL_HANDLE;
     if(s_session)xrDestroySession(s_session);s_session=XR_NULL_HANDLE;
     if(s_actions)xrDestroyActionSet(s_actions);s_actions=XR_NULL_HANDLE;s_stick=XR_NULL_HANDLE;
+    s_trigger=s_squeeze=XR_NULL_HANDLE;memset(s_click,0,sizeof s_click);
     if(s_instance)xrDestroyInstance(s_instance);s_instance=XR_NULL_HANDLE;
     s_origin_valid=0;s_origin_reset_time=0;s_stats.initialized=s_stats.running=s_stats.tracking=s_stats.frame_open=0;
 #endif
@@ -230,6 +263,11 @@ int psx_openxr_input(PSXModOpenXRInput *out) {
         s_input=s_injected;s_input.sequence=seq;s_input.synthetic=1;
         for(int e=0;e<2;e++) if(!s_input.focused || !s_input.active[e])
             s_input.stick[e][0]=s_input.stick[e][1]=0;
+        for(int e=0;e<2;e++) {
+            if(!s_input.focused || !s_input.trigger_active[e])s_input.trigger[e]=0;
+            if(!s_input.focused || !s_input.squeeze_active[e])s_input.squeeze[e]=0;
+            s_input.buttons[e] &= s_input.focused ? s_input.buttons_active[e] : 0;
+        }
         *out=s_input;return 1;
     }
 #endif
@@ -249,6 +287,26 @@ int psx_openxr_input(PSXModOpenXRInput *out) {
                     current.stick[e][0]=state.currentState.x;current.stick[e][1]=state.currentState.y;
                     for(int a=0;a<2;a++) if(!isfinite(current.stick[e][a]) || fabsf(current.stick[e][a])>1) valid=0;
                 }
+                XrAction analog[2]={s_trigger,s_squeeze};
+                for(int a=0;a<2;a++) {
+                    get.action=analog[a];
+                    XrActionStateFloat value={XR_TYPE_ACTION_STATE_FLOAT};
+                    if(!check(xrGetActionStateFloat(s_session,&get,&value),"analog_action_state")) { valid=0;break; }
+                    float v=value.isActive?value.currentState:0;
+                    if(!isfinite(v) || v<0 || v>1) { valid=0;break; }
+                    if(a==0){current.trigger_active[e]=value.isActive;current.trigger[e]=v;}
+                    else {current.squeeze_active[e]=value.isActive;current.squeeze[e]=v;}
+                }
+                for(int a=0;a<4;a++) {
+                    get.action=s_click[a];
+                    XrActionStateBoolean value={XR_TYPE_ACTION_STATE_BOOLEAN};
+                    if(!check(xrGetActionStateBoolean(s_session,&get,&value),"click_action_state")) { valid=0;break; }
+                    if(value.isActive) {
+                        current.buttons_active[e] |= 1u<<a;
+                        if(value.currentState)current.buttons[e] |= 1u<<a;
+                    }
+                }
+                if(!valid)break;
             }
             if(valid)s_input=current;
         }

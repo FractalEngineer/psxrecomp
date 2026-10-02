@@ -393,11 +393,21 @@ int psx_mod_openxr_view(uint32_t eye, PSXModRenderView *view);
 int psx_mod_openxr_end(int pair_rendered);
 void psx_mod_openxr_recenter(void);
 /* Fresh action sample at the offline input boundary, never in an eye replay.
- * Positive Y is forward/up in XR. Inactive/unfocused hands return zero axes. */
+ * Positive Y is forward/up in XR. active[] refers only to thumbsticks;
+ * other actions have independent activity. Unavailable/unfocused actions
+ * return zero values. Click masks are active-high, unrelated to PSX pad bits. */
+#define PSX_MOD_XR_PRIMARY   1u /* left X / right A */
+#define PSX_MOD_XR_SECONDARY 2u /* left Y / right B */
+#define PSX_MOD_XR_MENU      4u /* Touch left Menu */
+#define PSX_MOD_XR_STICK     8u /* thumbstick click */
+#define PSX_MOD_XR_CLICKS   15u
 typedef struct PSXModOpenXRInput {
     uint32_t struct_size, focused, active[2], synthetic;
     float stick[2][2];
     uint64_t sequence;
+    float trigger[2], squeeze[2]; /* [0,1] */
+    uint32_t trigger_active[2], squeeze_active[2];
+    uint32_t buttons[2], buttons_active[2]; /* PSX_MOD_XR_* masks */
 } PSXModOpenXRInput;
 int psx_mod_openxr_input(PSXModOpenXRInput *input);
 

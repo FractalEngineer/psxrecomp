@@ -229,3 +229,30 @@ fully consistent. Physical angular speed and real focus-loss/reconnection remain
 unmeasured. A later visibility complaint occurred despite valid submitted pairs;
 restart restored the test, but its cause was not isolated. Do not infer visibility
 from submission counters alone.
+
+## OpenXR Touch combat action samples (2026-10-02)
+
+Extend the opt-in gameplay action set from sticks to trigger/squeeze floats and
+primary/secondary/Menu/stick-click booleans, with 13 Oculus Touch bindings.
+Activity is per action, independently of stick activity. No game semantics or
+PSX button assignments enter the XR backend. All unavailable/focus-loss/failure
+paths release values; synthetic overrides validate ranges/masks before mutation.
+
+Files: runtime/include/mod_plugins.h, runtime/src/psx_openxr.c,
+runtime/src/debug_server.c, runtime/tests/test_openxr_input.c,
+docs/OPENXR_RENDERING.md and docs/internal/FAITHFUL_TIMING_PLAN.md. The public
+input struct has appended fields and still requires current sizeof: rebuild
+consumers. Existing TCP commands expose the new fields and synthetic controls;
+the command count stays 330. No new printf/log diagnostic path or faithful default
+change. The game mapping and native binding guard remain outside this repo.
+
+Validation: compiled-out XR-input test with independent stick/button activity,
+invalid values and neutral release; game mapping test including combined movement
+and fire; debug-less syntax; controller lifecycle/render guards; TCP index;
+OpenXR-enabled Debug/Release builds. Live desktop synthetic controls establish
+weapon selection, ammo decrement/reload transfer and crouch through actual native
+writers, plus button release and pause/resume. Real Quest combat actions and
+hardware focus-loss/reconnect are pending; prior live stick measurements do not
+validate the added actions. Raw game evidence stays ignored, compact receipt in
+game docs/reverse/VR_COMBAT_RECEIPT.json. First-generation headset cadence and
+native body aim are unchanged.
