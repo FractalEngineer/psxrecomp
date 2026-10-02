@@ -411,6 +411,29 @@ typedef struct PSXModOpenXRInput {
 } PSXModOpenXRInput;
 int psx_mod_openxr_input(PSXModOpenXRInput *input);
 
+/* Read-only controller snapshot from the latest located XR frame. Grip and aim
+ * share the eye poses' predicted time and LOCAL space; no action sync or locate
+ * occurs here, including during eye replay. Positions are meters; quaternions
+ * are x,y,z,w. The origin matches the rendered view's recenter basis. Consumers
+ * must check focus, activity, validity and age before using a cached pose. */
+enum { PSX_MOD_XR_GRIP_POSE = 0, PSX_MOD_XR_AIM_POSE = 1 };
+#define PSX_MOD_XR_ORIENTATION_VALID   1u
+#define PSX_MOD_XR_POSITION_VALID      2u
+#define PSX_MOD_XR_ORIENTATION_TRACKED 4u
+#define PSX_MOD_XR_POSITION_TRACKED    8u
+typedef struct PSXModTrackedPose {
+    uint32_t active, flags;
+    float position_m[3], orientation_xyzw[4];
+} PSXModTrackedPose;
+typedef struct PSXModOpenXRHands {
+    uint32_t struct_size, focused, synthetic, origin_valid;
+    uint64_t sequence, predicted_time;
+    uint32_t age_ms; /* UINT32_MAX when no real frame has been located */
+    double origin_position_m[3], origin_orientation_xyzw[4];
+    PSXModTrackedPose pose[2][2]; /* [left/right][grip/aim] */
+} PSXModOpenXRHands;
+int psx_mod_openxr_hands(PSXModOpenXRHands *hands);
+
 
 int psx_mod_set_auto_skip_fmv(int enabled);
 /*

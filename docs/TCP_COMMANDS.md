@@ -72,6 +72,8 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `unwatch` | ✓ | ✓ | `addr` | Remove memory watchpoint |
 | `set_input` | ✓ | ✓ | `buttons`, optional `frames`, optional `lx`, `ly`, `rx`, `ry` | Override pad1 buttons and optional analog axes (PS1 inverted bitmask, 0 = pressed; axes 0-255). Holds until `clear_input` on both backends; pass `frames=N` (beetle) to auto-release after N frames |
 | `clear_input` | ✓ | ✓ | — | Remove input and analog axis overrides |
+| `openxr_hands` | ? |   | ? | Read-only latest controller grip/aim poses, per-pose active/valid/tracked flags, LOCAL recenter origin, shared eye predicted time and host sample age; `[left/right][grip/aim]`. No polling or guest mutation |
+| `openxr_hands_override` | ? |   | `hand=left/right`, `pose=grip/aim`, optional `px_mm`, `py_mm`, `pz_mm`, `qx`, `qy`, `qz`, `qw`, `focused`, `active`, `flags`, or `clear=1` | Debug-only synthetic poses: positions in integer mm, quaternion components in millionths (default identity), flags 0..15. Rejected values leave the prior sample intact; output is labelled synthetic=1, predicted time=0 |
 | `turbo` | ✓ |   | `enabled` | Enable/disable TCP-controlled frontend turbo for fast-forward validation |
 | `turbo_state` | ✓ |   | — | Query TCP-controlled turbo state |
 | `pause` | ✓ |   | — | **REMOVED** — still registered, but always returns an error. Query a ring buffer (`fn_entry_tail`, `wtrace_dump`, `gpu_frame_dump`) instead of synthesizing a snapshot |
@@ -89,7 +91,7 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `first_failure` | ✓ |   | — | Find first divergence point between runs (native-side tracking) |
 | `read_frame_ram` | ✓ |   | `addr`, `len`, `frame` | Read RAM **as of a specific frame** (from ring buffer) |
 | `wtrace_range` | ✓ |   | `lo`, `hi` | Set RAM-write trace range (ring of 262 144 writes with RA — `WRITE_TRACE_CAP`, `1 << 18`) |
-| `wtrace_dump` | ✓ | beetle | optional `addr_lo`, `addr_hi`, `count`, `newest` | Dump RAM-write trace entries as JSON. The address filter is applied server-side over the FULL ring before the emit cap — always pass it when hunting a specific buffer, otherwise you only see the oldest `count` entries of the whole ring |
+| `wtrace_dump` | ✓ | beetle | optional `addr_lo`, `addr_hi`, `frame_lo`, `frame_hi`, native-only `pc_lo`, `pc_hi`, `count`, `newest` | Dump RAM-write trace entries as JSON. The address filter is applied server-side over the FULL ring before the emit cap — always pass it when hunting a specific buffer, otherwise you only see the oldest `count` entries of the whole ring. Native `pc_lo` inclusive / `pc_hi` exclusive filter the recorded full producer PC (DMA: initiator PC), before the cap; address/frame/PC filters compose |
 | `wtrace_clear` | ✓ |   | — | Reset the trace ring |
 | `mmio_dump` | ✓ |   | optional `addr`, `count`, `newest` | Dump the always-on MMIO write ring (256K entries, ALL 0x1F801xxx writes — SPU/DMA traffic rolls it in well under a minute of gameplay; for display history use `gp1_dump`) |
 | `mmio_clear` | ✓ |   | — | Reset the MMIO write ring |
@@ -435,9 +437,9 @@ The TCP server is the canonical instrumentation surface. Rule 3 in `CLAUDE.md` i
 
 ## Complete command index (generated)
 
-**330 commands registered** — 317 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**332 commands registered** — 319 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-61 of 330 have prose above; **269 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+63 of 332 have prose above; **269 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -609,6 +611,8 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `mmio_dump` | ✓ |  | ✓ |
 | `mmx6_freshfix` | ✓ |  |  |
 | `openxr_control` | ✓ |  |  |
+| `openxr_hands` | ✓ |  | ✓ |
+| `openxr_hands_override` | ✓ |  | ✓ |
 | `openxr_input` | ✓ |  |  |
 | `openxr_input_override` | ✓ |  |  |
 | `openxr_stats` | ✓ |  |  |

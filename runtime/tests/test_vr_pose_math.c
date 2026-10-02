@@ -24,5 +24,24 @@ int main(void) {
     CHECK(v.cx_delta_q16==-3355443 && v.cy_delta_q16==3145728);
     double bad[4]={0,0,0,0};CHECK(!vr_pose_to_view(bad,p,q,origin,f,1000,512,240,&v));
     CHECK(!vr_pose_to_view(q,p,q,origin,f,NAN,512,240,&v));
-    puts("PASS: metric IPD, axis signs, recenter, rotation and asymmetric FOV");return 0;
+    double r[9],t[3];
+    CHECK(vr_pose_to_transform(q,move,q,origin,1000,r,t));
+    CHECK(r[0]==1 && r[4]==1 && r[8]==1 && t[1]==-100 && t[2]==200);
+    CHECK(vr_pose_to_transform(yaw,move,q,origin,1000,r,t));
+    CHECK(r[2]<0 && r[6]>0); /* XR +Y rotation aims to PSX left. */
+    CHECK(vr_pose_to_view(yaw,move,q,origin,f,1000,512,240,&v));
+    for(int row=0;row<3;row++)for(int col=0;col<3;col++) {
+        double n=0;for(int k=0;k<3;k++)n+=v.rotation_q12[row*3+k]/4096.0*r[k*3+col];
+        CHECK(fabs(n-(row==col))<.0005);
+    }
+    for(int row=0;row<3;row++) {
+        double n=v.translation[row];
+        for(int k=0;k<3;k++)n+=v.rotation_q12[row*3+k]/4096.0*t[k];
+        CHECK(fabs(n)<.6); /* View's integer translation quantizes the inverse. */
+    }
+    CHECK(vr_pose_to_transform(yaw,move,yaw,move,1000,r,t));
+    CHECK(fabs(r[0]-1)<1e-10 && fabs(r[8]-1)<1e-10 && t[0]==0 && t[2]==0);
+    CHECK(!vr_pose_to_transform(bad,p,q,origin,1000,r,t));
+    CHECK(!vr_pose_to_transform(q,p,q,origin,NAN,r,t));
+    puts("PASS: metric poses, axis signs, inverse controller transform, recenter and FOV");return 0;
 }

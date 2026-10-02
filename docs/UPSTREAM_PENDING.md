@@ -267,3 +267,36 @@ these are not whole-test throughput or visibility proof. The user reports the
 pause menu too close and intends to replace native grip aim with weapon aiming.
 Controlled focus-loss/reconnection, controller poses/shot aiming and independent
 cadence remain open. No framework runtime changes for this follow-up.
+
+## Controller grip/aim snapshots and producer-PC trace filtering
+
+2026-10-02 follow-up on vr-dev. `PSXModOpenXRHands` is a separate opt-in
+read-only snapshot API, leaving PSXModOpenXRInput unchanged. Four grip/aim
+action spaces are located at the eye frame's predicted time in LOCAL, with
+the rendered recenter origin, independent activity/validity/tracking flags and
+host age. Querying does not sync actions or locate poses. Clearing on invalid
+frame/focus/recenter/shutdown prevents reuse; game policy must check freshness
+and validity before affecting gameplay. The helper pose-to-transform is the
+inverse of the existing recentered PSX view. No game weapon mapping, polling
+source or faithful default is added. Debug synthetic poses remain labelled.
+
+TCP `openxr_hands` and `openxr_hands_override` expose these contracts. The
+existing `wtrace_dump` also gains post-hoc full recorded PC bounds (inclusive
+lo/exclusive hi), applied before output count. DMA uses its already recorded
+initiator PC. Recording, guest execution and fingerprints are unchanged.
+This addresses truncated high-traffic replies when isolating shot/damage
+producers; an empty filtered reply alone is not absence-of-execution proof.
+
+Files: runtime/include/{mod_plugins,psx_openxr,vr_pose_math}.h,
+runtime/src/{psx_openxr,vr_pose_math,gpu_gl_renderer,debug_server}.c,
+input/math tests, OPENXR_RENDERING.md and TCP_COMMANDS.md (332 commands).
+
+Validation: compiled-out input/lifecycle and pose-math tests passed, as did
+debug-less syntax with the existing unused-parameter exception. SDK-enabled
+Release builds and live synthetic snapshot checks passed (stable sequence,
+invalid quaternion non-mutation, partial flags, focus and clear). Live PC
+filter matched Python filtering of a complete recorded slice, including empty
+range and newest/count checks. A native rifle control in MoH slot 5 measured
+enemy health 6 -> 3.5 at SW 8004ACC0, with idle/turned-away controls unchanged.
+These are desktop producer/diagnostic controls, not actual Quest pose alignment
+or aiming acceptance. Compact receipts reside in the game docs/reverse.

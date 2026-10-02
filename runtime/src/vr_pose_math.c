@@ -38,3 +38,20 @@ int vr_pose_to_view(const double q[4], const double p[3],
     v.cx_delta_q16=(int32_t)lround(cx*65536);v.cy_delta_q16=(int32_t)lround(cy*65536);
     *out=v;return 1;
 }
+int vr_pose_to_transform(const double q[4],const double p[3],
+                         const double oq[4],const double op[3],double units,
+                         double rotation[9],double translation[3]) {
+    double e[9],o[9],r[9],t[3];const int sign[3]={1,-1,-1};
+    if(!rotation || !translation || !matrix(q,e) || !matrix(oq,o) ||
+       !isfinite(units) || units<1 || units>65536)return 0;
+    for(int i=0;i<3;i++)if(!isfinite(p[i]) || !isfinite(op[i]))return 0;
+    for(int row=0;row<3;row++) {
+        for(int col=0;col<3;col++) {
+            double a=0;for(int k=0;k<3;k++)a+=o[k*3+row]*e[k*3+col];
+            r[row*3+col]=a*sign[row]*sign[col];
+        }
+        double a=0;for(int k=0;k<3;k++)a+=o[k*3+row]*(p[k]-op[k]);
+        t[row]=a*sign[row]*units;if(!isfinite(t[row]) || fabs(t[row])>65536)return 0;
+    }
+    memcpy(rotation,r,sizeof r);memcpy(translation,t,sizeof t);return 1;
+}

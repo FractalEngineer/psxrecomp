@@ -144,3 +144,34 @@ their hardware acceptance is user feedback, not trace proof. Its trailing status
 queries failed after the bounded game closed. The pause menu is visible but too
 close; game aiming still follows the native body, without controller poses.
 Controlled hardware focus-loss/reconnection and headset cadence remain open.
+
+## Tracked controller poses (2026-10-02)
+
+`psx_mod_openxr_hands` returns a separate struct-size-checked snapshot; the input
+ABI is unchanged. Four action spaces cover left/right grip/aim, bringing the
+Touch binding suggestions to 17. Spaces are located in LOCAL at the same
+predicted display time as the eyes, after establishing their recenter origin.
+The getter does not synchronize actions or locate spaces, including during
+eye replay. Raw positions are meters and quaternions are xyzw; the snapshot
+includes the eye recenter origin, focus, per-pose activity, OpenXR validity and
+tracking flags, sequence, predicted time and host sample age. No real frame
+reports age UINT32_MAX. Recenter, unsuccessful new frames, unfocused input and
+shutdown clear cached poses. Partial poses retain flags but have zero values;
+consumers must require both validity bits, activity, focus and a fresh sample.
+
+`vr_pose_to_transform` computes the recentered PSX pose transform, inverse to
+the existing view transform: R=S O^T E S, t=units S O^T(p-origin), with
+S=diag(1,-1,-1). It does not select game world/body coordinates or weapon policy.
+Game code owns those decisions and its stale-sample threshold.
+
+TCP `openxr_hands` observes the snapshot; debug-only `openxr_hands_override`
+injects explicitly synthetic poses using mm positions and millionth quaternion
+components, with focus/activity/flags and clear controls. Validation precedes
+mutation. Desktop controls passed read-only synthetic sequence checks, rejected
+quaternion non-mutation, partial validity, unfocused clearing and explicit
+clear. Compiled-out lifecycle tests and pose inverse/axis tests passed; the
+SDK-enabled Release game builds. Real Quest action-space binding, alignment,
+tracking-loss behavior and controller-driven game aiming remain unverified.
+
+Contract references: [action pose state](https://registry.khronos.org/OpenXR/specs/1.0/man/html/xrGetActionStatePose.html),
+[Khronos spaces specification](https://github.com/KhronosGroup/OpenXR-Docs/blob/main/specification/sources/chapters/spaces.adoc).

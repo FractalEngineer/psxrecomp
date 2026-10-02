@@ -8156,6 +8156,65 @@ static void handle_openxr_input(int id,const char *json) {
              s.buttons[0],s.buttons[1],s.buttons_active[0],s.buttons_active[1],
              mod_controller_source_present(0));
 }
+/* Read-only controller poses from the eye frame's predicted time. */
+static void handle_openxr_hands(int id,const char *json) {
+    (void)json;PSXModOpenXRHands s={0};s.struct_size=sizeof s;
+    if(!psx_openxr_hands(&s)){send_err(id,"hand snapshot unavailable");return;}
+    char buf[4096];size_t pos=0;
+    pos+=(size_t)snprintf(buf+pos,sizeof buf-pos,
+        "{\"id\":%d,\"ok\":true,\"sequence\":%llu,\"synthetic\":%u,\"focused\":%u,"
+        "\"origin_valid\":%u,\"predicted_time\":%llu,\"age_ms\":%u,"
+        "\"origin_position_m\":[%.9f,%.9f,%.9f],\"origin_orientation_xyzw\":[%.9f,%.9f,%.9f,%.9f],\"pose\":[",
+        id,(unsigned long long)s.sequence,s.synthetic,s.focused,s.origin_valid,
+        (unsigned long long)s.predicted_time,s.age_ms,
+        s.origin_position_m[0],s.origin_position_m[1],s.origin_position_m[2],
+        s.origin_orientation_xyzw[0],s.origin_orientation_xyzw[1],
+        s.origin_orientation_xyzw[2],s.origin_orientation_xyzw[3]);
+    for(int e=0;e<2;e++) {
+        pos+=(size_t)snprintf(buf+pos,sizeof buf-pos,"%s[",e?",":"");
+        for(int k=0;k<2;k++) {
+            const PSXModTrackedPose *v=&s.pose[e][k];
+            pos+=(size_t)snprintf(buf+pos,sizeof buf-pos,
+                "%s{\"active\":%u,\"flags\":%u,\"position_m\":[%.9f,%.9f,%.9f],"
+                "\"orientation_xyzw\":[%.9f,%.9f,%.9f,%.9f]}",k?",":"",v->active,v->flags,
+                v->position_m[0],v->position_m[1],v->position_m[2],
+                v->orientation_xyzw[0],v->orientation_xyzw[1],v->orientation_xyzw[2],v->orientation_xyzw[3]);
+        }
+        pos+=(size_t)snprintf(buf+pos,sizeof buf-pos,"]");
+    }
+    (void)snprintf(buf+pos,sizeof buf-pos,"]}");debug_server_send_line(buf);
+}
+static void handle_openxr_hands_override(int id,const char *json) {
+    if(json_get_int(json,"clear",0)){psx_openxr_hands_override(NULL);handle_openxr_hands(id,json);return;}
+    char hand[16],pose[16];
+    if(!json_get_str(json,"hand",hand,sizeof hand) || !json_get_str(json,"pose",pose,sizeof pose)) {
+        send_err(id,"hand=left|right and pose=grip|aim required");return;
+    }
+    int e=!strcmp(hand,"left")?0:!strcmp(hand,"right")?1:-1;
+    int k=!strcmp(pose,"grip")?0:!strcmp(pose,"aim")?1:-1;
+    int active=json_get_int(json,"active",1),focused=json_get_int(json,"focused",1),flags=json_get_int(json,"flags",15);
+    if(e<0 || k<0 || active<0 || active>1 || focused<0 || focused>1 || flags<0 || flags>15) {
+        send_err(id,"invalid hand, pose, focus, activity or flags");return;
+    }
+    PSXModOpenXRHands s={0};s.struct_size=sizeof s;(void)psx_openxr_hands(&s);
+    if(!s.synthetic){memset(&s,0,sizeof s);s.struct_size=sizeof s;s.origin_valid=1;s.origin_orientation_xyzw[3]=1;}
+    s.focused=(uint32_t)focused;s.predicted_time=0;
+    PSXModTrackedPose *v=&s.pose[e][k];memset(v,0,sizeof *v);
+    v->active=(uint32_t)active;v->flags=(uint32_t)flags;
+    const char *pn[3]={"px_mm","py_mm","pz_mm"},*qn[4]={"qx","qy","qz","qw"};
+    for(int i=0;i<3;i++) {
+        int value=json_get_int(json,pn[i],0);
+        if(value < -100000 || value > 100000){send_err(id,"position must be -100000..100000 mm");return;}
+        v->position_m[i]=(float)value/1000;
+    }
+    for(int i=0;i<4;i++) {
+        int value=json_get_int(json,qn[i],i==3?1000000:0);
+        if(value < -1000000 || value > 1000000){send_err(id,"quaternion components must be -1000000..1000000");return;}
+        v->orientation_xyzw[i]=(float)value/1000000;
+    }
+    if(!psx_openxr_hands_override(&s)){send_err(id,"invalid synthetic pose numbers");return;}
+    handle_openxr_hands(id,json);
+}
 /* Debug-only synthetic action sample; axes are signed thousandths [-1000,1000].
  * Explicitly tagged so desktop controls cannot be mistaken for device evidence. */
 static void handle_openxr_input_override(int id,const char *json) {
@@ -11431,6 +11490,15 @@ static void handle_wtrace_dump(int id, const char *json)
     if (json_get_str(json, "addr_hi", hi_str, sizeof(hi_str)))
         filter_hi = hex_to_u32(hi_str) & 0x1FFFFFFFu;
 
+    /* Filter the recorded producer PC, including its segment. DMA entries use
+     * the initiator PC already stored by wtrace_fill_entry. Post-hoc only:
+     * recording, fingerprints and guest execution are unchanged. */
+    uint32_t pc_lo = 0, pc_hi = 0xFFFFFFFFu;
+    if (json_get_str(json, "pc_lo", lo_str, sizeof(lo_str)))
+        pc_lo = hex_to_u32(lo_str);
+    if (json_get_str(json, "pc_hi", hi_str, sizeof(hi_str)))
+        pc_hi = hex_to_u32(hi_str);
+
     /* Optional frame-window filter — the "query the ring for the window of
      * interest" primitive.  Lets a caller reach entries in the MIDDLE of a deep,
      * high-traffic ring (which oldest-N / newest-N paging cannot). -1 = unbounded. */
@@ -11454,8 +11522,9 @@ static void handle_wtrace_dump(int id, const char *json)
     size_t pos = 0;
     uint32_t emitted = 0;
     pos += snprintf(buf + pos, BUF_SZ - pos,
-                    "{\"id\":%d,\"ok\":true,\"total\":%llu,\"available\":%u,\"entries\":[",
-                    id, (unsigned long long)total, avail);
+                    "{\"id\":%d,\"ok\":true,\"total\":%llu,\"available\":%u,"
+                    "\"pc_lo\":\"0x%08X\",\"pc_hi\":\"0x%08X\",\"entries\":[",
+                    id, (unsigned long long)total, avail, pc_lo, pc_hi);
     for (uint32_t i = 0; i < avail && emitted < MAX_OUT && pos < BUF_SZ - 256; i++) {
         uint32_t idx;
         if (newest_first) {
@@ -11466,6 +11535,7 @@ static void handle_wtrace_dump(int id, const char *json)
         }
         WriteTraceEntry *e = &s_wtrace[idx];
         if (e->addr < filter_lo || e->addr >= filter_hi) continue;
+        if (e->pc < pc_lo || e->pc >= pc_hi) continue;
         if (frame_lo >= 0 && (int)e->frame < frame_lo) continue;
         if (frame_hi >= 0 && (int)e->frame > frame_hi) continue;
         pos += snprintf(buf + pos, BUF_SZ - pos,
@@ -14341,6 +14411,8 @@ static const CmdEntry s_commands[] = {
     { "openxr_control", handle_openxr_control },
     { "openxr_input", handle_openxr_input },
     { "openxr_input_override", handle_openxr_input_override },
+    { "openxr_hands", handle_openxr_hands },
+    { "openxr_hands_override", handle_openxr_hands_override },
     { "stereo_stats", handle_stereo_stats },
     { "stereo_dump", handle_stereo_dump },
     { "render_pass_dump",  handle_render_pass_dump },

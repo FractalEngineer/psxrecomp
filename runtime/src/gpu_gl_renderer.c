@@ -6572,6 +6572,9 @@ int psx_mod_openxr_input(PSXModOpenXRInput *input) {
     if (s_pass_active) return 0;
     return psx_openxr_input(input);
 }
+int psx_mod_openxr_hands(PSXModOpenXRHands *hands) {
+    return psx_openxr_hands(hands); /* Snapshot only, also safe during replay. */
+}
 static int openxr_copy_eye(uint32_t eye, uint32_t texture, int w, int h) {
     StereoPair *p = &s_stereo_pair[s_stereo_current];
     GLint read_fbo, draw_fbo; GLuint target = 0;

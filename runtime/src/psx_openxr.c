@@ -8,9 +8,46 @@
 static PSXOpenXRStats s_stats;
 static uint64_t s_pair_id,s_pair_cycle;
 static PSXModOpenXRInput s_input;
+static PSXModOpenXRHands s_hands;
+static uint64_t s_hands_sequence, s_hands_sample_ms;
+static void hands_clear(void) {
+    memset(&s_hands,0,sizeof s_hands);s_hands.struct_size=sizeof s_hands;
+    s_hands.sequence=++s_hands_sequence;s_hands.age_ms=UINT32_MAX;
+    s_hands_sample_ms=0;
+}
 #ifndef PSX_NO_DEBUG_TOOLS
 static int s_input_override;
 static PSXModOpenXRInput s_injected;
+static int s_hands_override;
+static PSXModOpenXRHands s_injected_hands;
+static int valid_pose_numbers(const double q[4],const double p[3]) {
+    double n=0;
+    for(int i=0;i<4;i++){if(!isfinite(q[i]))return 0;n+=q[i]*q[i];}
+    for(int i=0;i<3;i++)if(!isfinite(p[i]) || fabs(p[i])>100)return 0;
+    return n>=.5 && n<=1.5;
+}
+int psx_openxr_hands_override(const PSXModOpenXRHands *hands) {
+    if(!hands){s_hands_override=0;hands_clear();return 1;}
+    if(hands->struct_size!=sizeof *hands || hands->focused>1 || hands->origin_valid>1)return 0;
+    for(int i=0;i<4;i++)if(!isfinite(hands->origin_orientation_xyzw[i]))return 0;
+    for(int i=0;i<3;i++)if(!isfinite(hands->origin_position_m[i]) || fabs(hands->origin_position_m[i])>100)return 0;
+    if(hands->origin_valid && !valid_pose_numbers(hands->origin_orientation_xyzw,hands->origin_position_m))return 0;
+    for(int e=0;e<2;e++)for(int k=0;k<2;k++) {
+        const PSXModTrackedPose *v=&hands->pose[e][k];
+        if(v->active>1 || (v->flags & ~15u))return 0;
+        double q[4],p[3];for(int i=0;i<4;i++)q[i]=v->orientation_xyzw[i];
+        for(int i=0;i<3;i++)p[i]=v->position_m[i];
+        for(int i=0;i<4;i++)if(!isfinite(q[i]))return 0;
+        for(int i=0;i<3;i++)if(!isfinite(p[i]) || fabs(p[i])>100)return 0;
+        if((v->flags & 3u) && !valid_pose_numbers(q,p))return 0;
+    }
+    s_injected_hands=*hands;s_injected_hands.synthetic=1;
+    s_injected_hands.sequence=++s_hands_sequence;s_injected_hands.age_ms=0;
+    for(int e=0;e<2;e++)for(int k=0;k<2;k++)
+        if(!hands->focused || !hands->origin_valid || !hands->pose[e][k].active)
+            memset(&s_injected_hands.pose[e][k],0,sizeof(PSXModTrackedPose));
+    s_hands_override=1;return 1;
+}
 int psx_openxr_input_override(const PSXModOpenXRInput *input) {
     if (!input) { s_input_override=0; memset(&s_injected,0,sizeof s_injected); return 1; }
     if (input->struct_size!=sizeof *input || input->focused>1 ||
@@ -30,6 +67,7 @@ int psx_openxr_input_override(const PSXModOpenXRInput *input) {
 void psx_openxr_input_snapshot(PSXModOpenXRInput *out) { if(out)*out=s_input; }
 void psx_openxr_pair_metadata(uint64_t id,uint64_t cycle){s_pair_id=id;s_pair_cycle=cycle;}
 #if defined(PSX_OPENXR)
+#include "host_time.h"
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <unknwn.h>
@@ -45,6 +83,8 @@ static XrSpace s_space;
 static XrActionSet s_actions;
 static XrAction s_stick;
 static XrAction s_trigger,s_squeeze,s_click[4];
+static XrAction s_pose_action[2];
+static XrSpace s_pose_space[2][2];
 static XrPath s_hand[2];
 static XrTime s_origin_reset_time;
 static XrSwapchain s_chain[2];
@@ -83,6 +123,17 @@ static int input_initialize(void) {
         strcpy(action.actionName,names[i]);strcpy(action.localizedActionName,labels[i]);
         if(!check(xrCreateAction(s_actions,&action,&s_click[i]),names[i]))return 0;
     }
+    action.actionType=XR_ACTION_TYPE_POSE_INPUT;
+    for(int k=0;k<2;k++) {
+        strcpy(action.actionName,k?"aim_pose":"grip_pose");
+        strcpy(action.localizedActionName,k?"Aim pose":"Grip pose");
+        if(!check(xrCreateAction(s_actions,&action,&s_pose_action[k]),"pose_action"))return 0;
+        for(int e=0;e<2;e++) {
+            XrActionSpaceCreateInfo ci={XR_TYPE_ACTION_SPACE_CREATE_INFO};
+            ci.action=s_pose_action[k];ci.subactionPath=s_hand[e];ci.poseInActionSpace.orientation.w=1;
+            if(!check(xrCreateActionSpace(s_session,&ci,&s_pose_space[e][k]),"pose_space"))return 0;
+        }
+    }
     XrPath profile;
     if(!check(xrStringToPath(s_instance,"/interaction_profiles/oculus/touch_controller",&profile),"touch_profile"))return 0;
     const char *paths[2][7]={
@@ -94,10 +145,17 @@ static int input_initialize(void) {
          "/user/hand/right/input/squeeze/value","/user/hand/right/input/a/click",
          "/user/hand/right/input/b/click",NULL,"/user/hand/right/input/thumbstick/click"}};
     XrAction actions[7]={s_stick,s_trigger,s_squeeze,s_click[0],s_click[1],s_click[2],s_click[3]};
-    XrActionSuggestedBinding bindings[13];uint32_t n=0;
+    XrActionSuggestedBinding bindings[17];uint32_t n=0;
     for(int e=0;e<2;e++)for(int a=0;a<7;a++)if(paths[e][a]) {
         bindings[n].action=actions[a];
         if(!check(xrStringToPath(s_instance,paths[e][a],&bindings[n].binding),"touch_input_path"))return 0;
+        n++;
+    }
+    const char *pose_paths[2][2]={{"/user/hand/left/input/grip/pose","/user/hand/left/input/aim/pose"},
+                               {"/user/hand/right/input/grip/pose","/user/hand/right/input/aim/pose"}};
+    for(int e=0;e<2;e++)for(int k=0;k<2;k++) {
+        bindings[n].action=s_pose_action[k];
+        if(!check(xrStringToPath(s_instance,pose_paths[e][k],&bindings[n].binding),"pose_binding"))return 0;
         n++;
     }
     XrInteractionProfileSuggestedBinding suggest={XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
@@ -207,7 +265,52 @@ static int events(void) {
     }
     return 1;
 }
+static void hands_locate(void) {
+    PSXModOpenXRHands current=s_hands;
+    current.predicted_time=(uint64_t)s_time;
+    current.focused=s_stats.state==XR_SESSION_STATE_FOCUSED && s_input.focused;
+    current.origin_valid=s_origin_valid;
+    memcpy(current.origin_position_m,s_op,sizeof s_op);
+    memcpy(current.origin_orientation_xyzw,s_oq,sizeof s_oq);
+    if(current.focused && current.origin_valid)for(int e=0;e<2;e++)for(int k=0;k<2;k++) {
+        XrActionStateGetInfo get={XR_TYPE_ACTION_STATE_GET_INFO};
+        get.action=s_pose_action[k];get.subactionPath=s_hand[e];
+        XrActionStatePose state={XR_TYPE_ACTION_STATE_POSE};
+        if(!check(xrGetActionStatePose(s_session,&get,&state),"pose_state"))continue;
+        PSXModTrackedPose *v=&current.pose[e][k];v->active=state.isActive;
+        if(!state.isActive)continue;
+        XrSpaceLocation loc={XR_TYPE_SPACE_LOCATION};
+        XrResult r=xrLocateSpace(s_pose_space[e][k],s_space,s_time,&loc);
+        if(!check(r,"locate_hand") || r!=XR_SUCCESS)continue;
+        v->flags=(uint32_t)loc.locationFlags & 15u;
+        if((v->flags & 3u)!=3u)continue; /* Values remain zero for incomplete poses. */
+        double norm=0;float q[4]={loc.pose.orientation.x,loc.pose.orientation.y,
+                               loc.pose.orientation.z,loc.pose.orientation.w};
+        float p[3]={loc.pose.position.x,loc.pose.position.y,loc.pose.position.z};
+        int valid=1;
+        for(int i=0;i<4;i++){if(!isfinite(q[i]))valid=0;norm+=(double)q[i]*q[i];}
+        for(int i=0;i<3;i++)if(!isfinite(p[i]) || fabsf(p[i])>100)valid=0;
+        if(!valid || norm<.5 || norm>1.5){v->flags=0;continue;}
+        memcpy(v->orientation_xyzw,q,sizeof q);memcpy(v->position_m,p,sizeof p);
+    }
+    s_hands=current;s_hands_sample_ms=psx_host_mono_ms();
+}
 #endif
+int psx_openxr_hands(PSXModOpenXRHands *out) {
+    if(!out || out->struct_size!=sizeof *out)return 0;
+#ifndef PSX_NO_DEBUG_TOOLS
+    if(s_hands_override){*out=s_injected_hands;return 1;}
+#endif
+    *out=s_hands;out->struct_size=sizeof *out;out->age_ms=UINT32_MAX;
+#if defined(PSX_OPENXR)
+    if(s_hands_sample_ms) {
+        uint64_t now=psx_host_mono_ms();
+        uint64_t age=now>=s_hands_sample_ms?now-s_hands_sample_ms:UINT32_MAX;
+        out->age_ms=age<UINT32_MAX?(uint32_t)age:UINT32_MAX;
+    }
+#endif
+    return 1;
+}
 void psx_openxr_stats(PSXOpenXRStats *out) {
     if(out){*out=s_stats;
 #if defined(PSX_OPENXR)
@@ -216,6 +319,7 @@ void psx_openxr_stats(PSXOpenXRStats *out) {
     }
 }
 void psx_openxr_recenter(void) {
+    hands_clear();
 #if defined(PSX_OPENXR)
     s_origin_valid=0;
 #endif
@@ -224,6 +328,10 @@ void psx_openxr_shutdown(void) {
 #if defined(PSX_OPENXR)
     if(s_stats.frame_open)psx_openxr_end(0,NULL);
     for(int eye=0;eye<2;eye++) {
+        for(int k=0;k<2;k++) {
+            if(s_pose_space[eye][k])xrDestroySpace(s_pose_space[eye][k]);
+            s_pose_space[eye][k]=XR_NULL_HANDLE;
+        }
         if(s_chain[eye])xrDestroySwapchain(s_chain[eye]);
         s_chain[eye]=XR_NULL_HANDLE;free(s_images[eye]);s_images[eye]=NULL;s_count[eye]=0;
     }
@@ -231,13 +339,16 @@ void psx_openxr_shutdown(void) {
     if(s_session)xrDestroySession(s_session);s_session=XR_NULL_HANDLE;
     if(s_actions)xrDestroyActionSet(s_actions);s_actions=XR_NULL_HANDLE;s_stick=XR_NULL_HANDLE;
     s_trigger=s_squeeze=XR_NULL_HANDLE;memset(s_click,0,sizeof s_click);
+    memset(s_pose_action,0,sizeof s_pose_action);
     if(s_instance)xrDestroyInstance(s_instance);s_instance=XR_NULL_HANDLE;
     s_origin_valid=0;s_origin_reset_time=0;s_stats.initialized=s_stats.running=s_stats.tracking=s_stats.frame_open=0;
 #endif
     s_stats.enabled=0;
     memset(&s_input,0,sizeof s_input);
+    hands_clear();
 #ifndef PSX_NO_DEBUG_TOOLS
     s_input_override=0;
+    s_hands_override=0;memset(&s_injected_hands,0,sizeof s_injected_hands);
 #endif
 }
 int psx_openxr_enable(int enabled) {
@@ -268,6 +379,7 @@ int psx_openxr_input(PSXModOpenXRInput *out) {
             if(!s_input.focused || !s_input.squeeze_active[e])s_input.squeeze[e]=0;
             s_input.buttons[e] &= s_input.focused ? s_input.buttons_active[e] : 0;
         }
+        if(!s_input.focused)hands_clear();
         *out=s_input;return 1;
     }
 #endif
@@ -312,11 +424,13 @@ int psx_openxr_input(PSXModOpenXRInput *out) {
         }
     }
 #endif
+    if(!s_input.focused)hands_clear();
     *out=s_input;return 1; /* Always a fresh neutral sample when unavailable. */
 }
 int psx_openxr_begin(int width,int height,double units) {
 #if defined(PSX_OPENXR)
     if(!s_stats.enabled || s_stats.frame_open)return 0;
+    hands_clear();
     s_stats.units_per_meter=units;
     if(!s_stats.initialized && !initialize()) {
         /* Retain the failed producer/result. Avoid repeated costly startup until
@@ -373,6 +487,7 @@ int psx_openxr_begin(int width,int height,double units) {
         s_stats.fov[i][2]=s_views[i].fov.angleUp;s_stats.fov[i][3]=s_views[i].fov.angleDown;
         s_stats.view[i]=s_render[i];
     }
+    hands_locate();
     s_stats.tracking=1;s_stats.stage="located";return 1;
 #endif
     return 0;

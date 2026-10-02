@@ -1799,3 +1799,12 @@ docs/OPENXR_RENDERING.md and UPSTREAM_PENDING.md. Headset cadence remains open.
   diagnostics after bounded shutdown. Pause menu depth needs game-side work.
   Controlled reconnect and weapon aiming remain open. Documentation only; no
   faithful runtime changes. See UPSTREAM_PENDING.md and game combat receipt.
+
+- **2026-10-02 (opt-in tracked hands / producer inspection):** Added separate
+  read-only grip/aim snapshots at eye predicted time, shared recenter origin,
+  validity/activity and host age, plus inverse pose math and explicitly synthetic
+  TCP controls. wtrace_dump gains post-hoc recorded PC bounds before count;
+  tracing and guest execution are unchanged. Compiled-out/math tests, SDK
+  Release build and live desktop pose/PC-filter controls pass. No faithful
+  defaults or guest timing changes. Actual Quest pose/weapon alignment remains
+  open. Framework PR inventory updated in UPSTREAM_PENDING.md.

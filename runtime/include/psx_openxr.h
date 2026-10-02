@@ -31,8 +31,10 @@ void psx_openxr_recenter(void);
 void psx_openxr_stats(PSXOpenXRStats *out);
 int psx_openxr_input(PSXModOpenXRInput *out);
 void psx_openxr_input_snapshot(PSXModOpenXRInput *out);
+int psx_openxr_hands(PSXModOpenXRHands *out);
 #ifndef PSX_NO_DEBUG_TOOLS
 int psx_openxr_input_override(const PSXModOpenXRInput *input);
+int psx_openxr_hands_override(const PSXModOpenXRHands *hands);
 #endif
 #ifdef __cplusplus
 }
