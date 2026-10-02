@@ -189,6 +189,9 @@ int gl_renderer_stereo_set_presentation(uint32_t mode) { return mode <= 1; }
 static int32_t s_view[3];
 void gte_render_view_get(int32_t xyz[3]) { memcpy(xyz, s_view, sizeof s_view); }
 void gte_render_view_set(const int32_t xyz[3]) { memcpy(s_view, xyz, sizeof s_view); }
+static PSXModRenderView s_pose;
+void gte_render_pose_get(PSXModRenderView *v) { *v = s_pose; memcpy(v->translation, s_view, sizeof s_view); }
+void gte_render_pose_set(const PSXModRenderView *v) { s_pose = *v; memcpy(s_view, v->translation, sizeof s_view); }
 int gl_renderer_stereo_publish(uint64_t id, uint64_t cycle, const int32_t view[2][3]) {
     (void)cycle; (void)view;
     if (s_stereo_mask != 3u) return 0;
@@ -278,6 +281,12 @@ static int leaky_pass_fn(struct CPUState *cpu, void *user, uint32_t alpha_q16) {
 static int stereo_draw(struct CPUState *cpu, void *user, uint32_t eye) {
     Frames frames = {5, user && eye == PSX_MOD_EYE_RIGHT};
     CHECK(psx_mod_render_view_offset(eye ? -24 : 24, 0, 0), "view setter inside eye");
+    PSXModRenderView v = {0}; v.struct_size = sizeof v;
+    v.rotation_q12[2] = 4096; v.rotation_q12[4] = 4096; v.rotation_q12[6] = -4096;
+    v.projection = 1; v.fx_q16 = 200 << 16; v.fy_q16 = 100 << 16;
+    v.translation[0] = eye ? -24 : 24;
+    CHECK(psx_mod_render_view(&v), "full scoped pose accepted");
+
     guest_frame(cpu, &frames, 0);
     return 1;
 }
@@ -429,6 +438,7 @@ int main(void) {
               "failure producer records retained pair and right eye");
         CHECK(s_view[0] == 0 && s_view[1] == 0 && s_view[2] == 0,
               "watchdog restores render-view ambient");
+        CHECK(!s_pose.struct_size && !s_pose.projection, "watchdog restores rotation/projection");
         CHECK(st.verify_mismatch == 0 && !g_psx_render_pass_active,
               "aborted eye restores machine state and time");
         check_live(&live, "after right-eye watchdog");

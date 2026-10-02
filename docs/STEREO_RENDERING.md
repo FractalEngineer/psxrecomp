@@ -57,3 +57,8 @@ TCP inspection:
 Validation and live limitations are tracked in `docs/UPSTREAM_PENDING.md` and
 the game's `docs/reverse/VR_EXECUTION_PLAN.md`. Projection scale and eye separation
 remain game-specific and must be calibrated independently.
+
+
+The full scoped view API and optional native headset path are described in
+[OPENXR_RENDERING.md](OPENXR_RENDERING.md). Stereo capture remains usable with
+OpenXR compiled out. No headset mode is enabled by default.

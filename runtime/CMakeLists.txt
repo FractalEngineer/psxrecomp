@@ -349,6 +349,13 @@ if(BUILD_TESTING)
     add_test(NAME sio_dualshock_rumble_test COMMAND sio_dualshock_rumble_test)
     set_tests_properties(sio_dualshock_rumble_test PROPERTIES DISABLED TRUE)
 
+    add_executable(vr_pose_math_test tests/test_vr_pose_math.c src/vr_pose_math.c)
+    target_include_directories(vr_pose_math_test PRIVATE include)
+    if(NOT MSVC)
+        target_link_libraries(vr_pose_math_test PRIVATE m)
+    endif()
+    add_test(NAME vr_pose_math_test COMMAND vr_pose_math_test)
+
     add_executable(gte_register_access_test
         tests/test_gte_register_access.cpp
         src/gte.cpp

@@ -373,6 +373,27 @@ int psx_mod_set_stereo_presentation(uint32_t mode);
  * Units are the game's GTE camera units; IPD/world-scale calibration is game
  * specific. Zero is faithful. Guest TR registers are not modified. */
 int psx_mod_render_view_offset(int32_t x, int32_t y, int32_t z);
+/* Rigid camera transform after guest RT*V+TR, before division. Rotation is
+ * row-major Q12; translation uses camera units. Optional projection supplies
+ * focal lengths and centre deltas from guest OFX/OFY in Q16 pixel units.
+ * Identity rotation with projection=0 preserves the architectural path. */
+typedef struct PSXModRenderView {
+    uint32_t struct_size;
+    int32_t rotation_q12[9], translation[3];
+    uint32_t projection;
+    uint32_t projection_h_ref; /* 0 absolute FOV; otherwise scale focal lengths by guest H/ref */
+    int32_t fx_q16, fy_q16, cx_delta_q16, cy_delta_q16;
+} PSXModRenderView;
+int psx_mod_render_view(const PSXModRenderView *view);
+/* Begin locates both views at one predicted time. End submits only a fresh
+ * complete pair; failed/shed redraws submit zero layers. */
+int psx_mod_openxr_enable(int enabled);
+int psx_mod_openxr_begin(uint32_t width, uint32_t height, double units_per_meter);
+int psx_mod_openxr_view(uint32_t eye, PSXModRenderView *view);
+int psx_mod_openxr_end(int pair_rendered);
+void psx_mod_openxr_recenter(void);
+
+
 int psx_mod_set_auto_skip_fmv(int enabled);
 /*
  * Draw still artwork behind the game image in OpenGL letterbox/pillarbox

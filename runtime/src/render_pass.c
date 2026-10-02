@@ -110,7 +110,7 @@ typedef struct RenderPassNesting {
     int      ov_active_depth;
     uint32_t ov_inprogress;
     void   (*ov_flush)(void);
-    int32_t render_view[3];
+    PSXModRenderView render_pose;
 } RenderPassNesting;
 
 static void nesting_save(RenderPassNesting *n) {
@@ -128,7 +128,7 @@ static void nesting_save(RenderPassNesting *n) {
     dirty_ram_ld_delay_save(&n->ld_delay);
     overlay_loader_native_nesting(&n->ov_active_depth, &n->ov_inprogress);
     n->ov_flush = g_overlay_flush_pending_cycles;
-    gte_render_view_get(n->render_view);
+    gte_render_pose_get(&n->render_pose);
 }
 
 static void nesting_restore(const RenderPassNesting *n) {
@@ -146,7 +146,7 @@ static void nesting_restore(const RenderPassNesting *n) {
     dirty_ram_ld_delay_restore(&n->ld_delay);
     overlay_loader_set_native_nesting(n->ov_active_depth, n->ov_inprogress);
     g_overlay_flush_pending_cycles = n->ov_flush;
-    gte_render_view_set(n->render_view);
+    gte_render_pose_set(&n->render_pose);
 }
 
 /* PSX_RENDER_PASS_VERIFY: a pass that returned normally must leave the
@@ -325,6 +325,20 @@ int psx_mod_render_view_offset(int32_t x, int32_t y, int32_t z) {
     int32_t xyz[3] = {x, y, z};
     if (!g_psx_render_pass_active) return 0;
     gte_render_view_set(xyz);
+    return 1;
+}
+
+
+int psx_mod_render_view(const PSXModRenderView *view) {
+    if (!g_psx_render_pass_active || !view || view->struct_size < sizeof *view ||
+        view->projection > 1u || view->projection_h_ref > 65535u) return 0;
+    /* Bound products well inside int64. Rigid matrices are supplied by caller. */
+    for (int i = 0; i < 9; ++i)
+        if (view->rotation_q12[i] < -4096 || view->rotation_q12[i] > 4096) return 0;
+    for (int i = 0; i < 3; ++i)
+        if (view->translation[i] < -65536 || view->translation[i] > 65536) return 0;
+    if (view->projection && (view->fx_q16 <= 0 || view->fy_q16 <= 0)) return 0;
+    gte_render_pose_set(view);
     return 1;
 }
 

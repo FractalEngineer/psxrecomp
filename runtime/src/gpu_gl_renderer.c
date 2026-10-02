@@ -84,6 +84,7 @@
 #include "latency_ring.h"
 #include "frame_pacing.h"
 #include "psx_rewind.h"
+#include "psx_openxr.h"
 
 #include "psx_sdl.h"
 #if defined(PSX_SDL3)
@@ -6174,6 +6175,7 @@ static void pass_free_color_fbo(GLuint *tex, GLuint *rb, GLuint *fbo,
 /* Context teardown (gl_renderer_shutdown): free the pass images, backups
  * and journal, and forget their names so a new context makes fresh ones. */
 static void pass_resources_release(void) {
+    psx_openxr_shutdown();
     stereo_resources_release();
     pass_gen_release(0);
     pass_gen_release(1);
@@ -6549,6 +6551,56 @@ int gl_renderer_stereo_publish(uint64_t id, uint64_t cycle, const int32_t view[2
     if (s_stereo_dump_left > 0) stereo_dump(p);
     return 1;
 }
+
+static uint64_t s_xr_begin_pair;
+int psx_mod_openxr_enable(int enabled) {
+    PSXOpenXRStats s; psx_openxr_stats(&s);
+    if (s_pass_active || s.frame_open) return 0;
+    return psx_openxr_enable(enabled);
+}
+void psx_mod_openxr_recenter(void) { psx_openxr_recenter(); }
+int psx_mod_openxr_begin(uint32_t width, uint32_t height, double units) {
+    if (s_pass_active || gl_renderer_stereo_unavailable() != PSX_MOD_RENDER_PASS_READY ||
+        !width || !height || width > VRAM_W || height > VRAM_H) return 0;
+    s_xr_begin_pair = s_stereo_valid ? s_stereo_pair[s_stereo_current].id : 0;
+    return psx_openxr_begin((int)width, (int)height, units);
+}
+int psx_mod_openxr_view(uint32_t eye, PSXModRenderView *view) {
+    return psx_openxr_view(eye, view);
+}
+static int openxr_copy_eye(uint32_t eye, uint32_t texture, int w, int h) {
+    StereoPair *p = &s_stereo_pair[s_stereo_current];
+    GLint read_fbo, draw_fbo; GLuint target = 0;
+    GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+    glGetIntegerv(0x8CAA, &read_fbo);
+    glGetIntegerv(0x8CA6, &draw_fbo);
+    p_glGenFramebuffers(1, &target);
+    p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, target);
+    p_glFramebufferTexture2D(PSXGL_DRAW_FRAMEBUFFER, PSXGL_COLOR_ATTACHMENT0,GL_TEXTURE_2D, texture, 0);
+    int ok = p_glCheckFramebufferStatus(PSXGL_DRAW_FRAMEBUFFER) == PSXGL_FRAMEBUFFER_COMPLETE;
+    if (ok) {
+        glDisable(GL_SCISSOR_TEST);
+        p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, p->fbo[eye]);
+        /* Stereo capture texture row convention is opposite the XR layer.
+         * User confirmed inverted headset output with the original direct blit.
+         * Flip only submission; eye dumps and desktop presentation stay intact. */
+        p_glBlitFramebuffer(0, p->th[eye], p->tw[eye], 0, 0, 0, w, h,
+                            GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        glFlush();
+    }
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, (GLuint)read_fbo);
+    p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, (GLuint)draw_fbo);
+    if (scissor) glEnable(GL_SCISSOR_TEST);
+    p_glDeleteFramebuffers(1, &target);return ok;
+}
+int psx_mod_openxr_end(int rendered) {
+    int fresh = rendered && s_stereo_valid && !s_pass_active &&
+                s_stereo_pair[s_stereo_current].id != s_xr_begin_pair;
+    if (fresh) psx_openxr_pair_metadata(s_stereo_pair[s_stereo_current].id,
+                                       s_stereo_pair[s_stereo_current].cycle);
+    return psx_openxr_end(fresh, openxr_copy_eye);
+}
+
 static int stereo_present(int w, int h) {
     StereoPair *p = &s_stereo_pair[s_stereo_current];
     int ww, wh, lx, ly, lw, lh;

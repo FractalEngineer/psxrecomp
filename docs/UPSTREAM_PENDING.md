@@ -152,5 +152,36 @@ an upstream implementation PR.
 Document every further framework change here with its purpose, affected API,
 validation and outstanding limitations. Push each commit to `fork/vr-dev` before
 updating and pushing the game submodule pin. Do not mix pending enhancements into
-faithful defaults. Stereo will need a separate simultaneous paired-image contract
-sharing transaction internals; no paired-eye API has been implemented yet.
+faithful defaults. The simultaneous paired-image contract now shares transaction internals;
+further headset work must retain that contract and the faithful defaults.
+
+
+## Scoped rigid views and experimental OpenXR (2026-10-02)
+
+Pending PR: PSXModRenderView adds a Q12 rigid camera transform and asymmetric
+Q16 projection, with optional authored H/reference focal ratio. Shared render
+transactions restore the full host pose on return/decline/watchdog; guest TR
+and CPU layout are unchanged. Identity and the existing offset path retain
+canonical GTE results. Metric pose conversion is independently tested.
+
+New opt-in PSX_OPENXR Win32/GL backend uses the pinned official SDK/static
+loader, explicit frame lifecycle, located eye poses/FOV, LOCAL recenter,
+private acquired swapchain images, matching projection submission and teardown.
+A fresh complete pair is required; rejected redraws submit zero layers.
+OpenXR launches explicitly request GL 4.6; ordinary launches keep 3.3.
+The MinGW-only vendor -Wundef warning is left nonfatal for older Windows
+partition headers; runtime warning policy is not changed. No SDK vendor edits.
+
+TCP openxr_stats/openxr_views/openxr_control expose the producer values and
+failures. GTE projection inspection adds render tagging, pagination and a 4096
+record limit for full-frame domain inspection. New docs/OPENXR_RENDERING.md
+records contract, measured Quest 3/VDXR startup/version refusal, Y-copy
+correction, actual IPD, and remaining cadence/culling/controller/HUD limitations.
+
+Validation: GTE canonical/register oracle and rigid/projection/focal tests,
+metric-pose tests, ordinary and watchdog full-pose restore tests, render guards,
+TCP index check, Debug/Release Medal of Honor builds, slot-3 paired controls and
+96-frame equal timelines. Live VDXR Release submitted complete native
+projection pairs; user confirmed upright output and expected head tracking.
+Game retains detailed receipts/results in docs/reverse; bulk captures ignored.
+World scale and wrist HUD are not declared physically calibrated/complete.

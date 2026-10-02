@@ -1,3 +1,4 @@
+#include "psx_openxr.h"
 /*
  * debug_server.c -- TCP debug server for PSX recomp v4
  *
@@ -6401,10 +6402,10 @@ static void handle_gte_ring_dump(int id, const char *json)
 {
     extern unsigned long long gte_rtp_ring_total(void);
     extern int gte_rtp_ring_dump_json(char *out, int outsz, int max_count,
-                                      int newest_first, long frame_filter);
+                                      int newest_first, long frame_filter, int offset, int render_filter);
     int count = json_get_int(json, "count", 64);
     if (count < 1) count = 1;
-    if (count > 512) count = 512;
+    if (count > 4096) count = 4096;
     int newest = json_get_int(json, "newest", 1) != 0;
     long frame = (long)json_get_int(json, "frame", -1);
 
@@ -6412,7 +6413,11 @@ static void handle_gte_ring_dump(int id, const char *json)
     char *entries = (char *)malloc(BUF_SZ);
     char *reply   = (char *)malloc(BUF_SZ + 256u);
     if (!entries || !reply) { free(entries); free(reply); send_err(id, "oom"); return; }
-    int n = gte_rtp_ring_dump_json(entries, (int)BUF_SZ, count, newest, frame);
+    int offset = json_get_int(json,"offset",0);
+    if (offset < 0) offset=0;
+    int render_filter = json_get_int(json,"render",-1);
+    if (render_filter != 0 && render_filter != 1) render_filter=-1;
+    int n = gte_rtp_ring_dump_json(entries, (int)BUF_SZ, count, newest, frame, offset, render_filter);
     snprintf(reply, BUF_SZ + 256u,
              "{\"id\":%d,\"ok\":true,\"total\":%llu,\"emitted\":%d,\"entries\":[%s]}",
              id, gte_rtp_ring_total(), n, entries);
@@ -8084,6 +8089,54 @@ static void handle_render_pass_refuse(int id, const char *json)
     gl_renderer_pass_force_refuse(on);
     send_fmt("{\"id\":%d,\"ok\":true,\"on\":%d,\"status\":%u}", id, on ? 1 : 0,
              (unsigned)psx_mod_render_pass_status());
+}
+
+static void handle_openxr_stats(int id, const char *json) {
+    PSXOpenXRStats s; (void)json; psx_openxr_stats(&s);
+    send_fmt("{\"id\":%d,\"ok\":true,\"compiled\":%u,\"enabled\":%u,"
+             "\"initialized\":%u,\"running\":%u,\"state\":%u,\"tracking\":%u,"
+             "\"frame_open\":%u,\"result\":%d,\"stage\":\"%s\",\"runtime\":\"%s\","
+             "\"last_failure\":\"%s\",\"last_failure_result\":%d,\"view_flags\":%llu,"
+             "\"waits\":%llu,\"submitted\":%llu,\"empty\":%llu,\"failures\":%llu,"
+             "\"predicted_time\":%llu,\"ipd_m\":%.6f,\"units_per_meter\":%.6f,"
+             "\"gl_version\":%llu,\"min_gl_version\":%llu,\"max_gl_version\":%llu}", id,s.compiled,s.enabled,
+             s.initialized,s.running,s.state,s.tracking,s.frame_open,s.result,
+             s.stage?s.stage:"off",s.runtime,s.last_failure?s.last_failure:"",s.last_failure_result,
+             (unsigned long long)s.view_flags,(unsigned long long)s.waits,
+             (unsigned long long)s.submitted,(unsigned long long)s.empty,
+             (unsigned long long)s.failures,(unsigned long long)s.predicted_time,s.ipd_m,s.units_per_meter,
+             (unsigned long long)s.gl_version,(unsigned long long)s.min_gl_version,
+             (unsigned long long)s.max_gl_version);
+}
+static void handle_openxr_views(int id,const char *json) {
+    PSXOpenXRStats s; (void)json;psx_openxr_stats(&s);
+    send_fmt("{\"id\":%d,\"ok\":true,\"predicted_time\":%llu,"
+             "\"submitted_pair_id\":%llu,\"submitted_guest_cycle\":%llu,"
+             "\"submitted_predicted_time\":%llu,\"eyes\":[",id,
+             (unsigned long long)s.predicted_time,(unsigned long long)s.submitted_pair_id,
+             (unsigned long long)s.submitted_guest_cycle,(unsigned long long)s.submitted_predicted_time);
+    for(int e=0;e<2;e++) {
+        PSXModRenderView *v=&s.view[e];
+        send_fmt("%s{\"eye\":%d,\"position_m\":[%.6f,%.6f,%.6f],"
+                 "\"orientation_xyzw\":[%.6f,%.6f,%.6f,%.6f],"
+                 "\"fov_lrud\":[%.6f,%.6f,%.6f,%.6f],"
+                 "\"rotation_q12\":[%d,%d,%d,%d,%d,%d,%d,%d,%d],"
+                 "\"translation\":[%d,%d,%d],\"projection_q16\":[%d,%d,%d,%d]}",
+                 e?",":"",e,s.pose[e][0],s.pose[e][1],s.pose[e][2],s.pose[e][3],s.pose[e][4],s.pose[e][5],s.pose[e][6],
+                 s.fov[e][0],s.fov[e][1],s.fov[e][2],s.fov[e][3],
+                 v->rotation_q12[0],v->rotation_q12[1],v->rotation_q12[2],v->rotation_q12[3],v->rotation_q12[4],
+                 v->rotation_q12[5],v->rotation_q12[6],v->rotation_q12[7],v->rotation_q12[8],
+                 v->translation[0],v->translation[1],v->translation[2],
+                 v->fx_q16,v->fy_q16,v->cx_delta_q16,v->cy_delta_q16);
+    }
+    send_fmt("]}");
+}
+
+static void handle_openxr_control(int id,const char *json) {
+    if (json_get_int(json,"recenter",0)) psx_mod_openxr_recenter();
+    int enable=json_get_int(json,"enable",-1);
+    if (enable>=0 && !psx_mod_openxr_enable(enable!=0)) { send_err(id,"OpenXR enable refused (not compiled or rendering)");return; }
+    handle_openxr_stats(id,json);
 }
 
 static void handle_stereo_stats(int id, const char *json) {
@@ -14225,6 +14278,9 @@ static const CmdEntry s_commands[] = {
     { "gl_ws_ablate",      handle_gl_ws_ablate },
     { "gl_interp",         handle_gl_interp },
     { "render_pass_stats", handle_render_pass_stats },
+    { "openxr_stats", handle_openxr_stats },
+    { "openxr_views", handle_openxr_views },
+    { "openxr_control", handle_openxr_control },
     { "stereo_stats", handle_stereo_stats },
     { "stereo_dump", handle_stereo_dump },
     { "render_pass_dump",  handle_render_pass_dump },

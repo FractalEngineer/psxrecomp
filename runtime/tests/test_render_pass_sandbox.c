@@ -238,6 +238,9 @@ int gl_renderer_stereo_set_presentation(uint32_t mode) { return mode <= 1; }
 static int32_t s_view[3];
 void gte_render_view_get(int32_t xyz[3]) { memcpy(xyz, s_view, sizeof s_view); }
 void gte_render_view_set(const int32_t xyz[3]) { memcpy(s_view, xyz, sizeof s_view); }
+static PSXModRenderView s_pose;
+void gte_render_pose_get(PSXModRenderView *v) { *v = s_pose; memcpy(v->translation, s_view, sizeof s_view); }
+void gte_render_pose_set(const PSXModRenderView *v) { s_pose = *v; memcpy(s_view, v->translation, sizeof s_view); }
 int gl_renderer_stereo_publish(uint64_t id, uint64_t cycle, const int32_t view[2][3]) {
     (void)cycle;
     (void)view;
@@ -633,6 +636,12 @@ static int pair_draw(CPUState *cpu, void *user, uint32_t eye) {
     s_eye_calls++;
     CHECK(s_view[0] == 0, "view offset restored before each eye");
     CHECK(psx_mod_render_view_offset(eye ? 24 : -24, 0, 0), "scoped view accepted");
+    PSXModRenderView v = {0}; v.struct_size = sizeof v;
+    v.rotation_q12[2] = 4096; v.rotation_q12[4] = 4096; v.rotation_q12[6] = -4096;
+    v.projection = 1; v.fx_q16 = 200 << 16; v.fy_q16 = 100 << 16;
+    v.translation[0] = eye ? 24 : -24;
+    CHECK(psx_mod_render_view(&v), "full scoped pose accepted");
+
     cpu->gpr[8] = eye + 1; s_ram[0x456] = (uint8_t)eye;
     psx_advance_cycles(5000u + eye);
     return (int)eye != s_eye_decline;
@@ -656,6 +665,7 @@ static void test_stereo(void) {
           "live state restored after the pair");
     CHECK(s_view[0] == 0 && stats.eye_view[0][0] == -24 && stats.eye_view[1][0] == 24,
           "producer offsets are recorded and do not escape");
+    CHECK(s_pose.struct_size == 0 && !s_pose.projection, "pose restored after pair");
     CHECK(!psx_mod_render_view_offset(1, 0, 0), "view rejected outside render callback");
     published = s_stereo_published;
     s_eye_decline = 1;

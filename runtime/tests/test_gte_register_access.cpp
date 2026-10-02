@@ -728,6 +728,38 @@ int test_precision_speculative_transaction() {
     return 0;
 }
 
+int test_render_pose() {
+    PSXModRenderView pose = {};
+    pose.struct_size = sizeof pose;
+    pose.rotation_q12[2] = 4096; pose.rotation_q12[4] = 4096;
+    pose.rotation_q12[6] = -4096;
+    GTEState g;
+    g.RT[0][0] = g.RT[1][1] = g.RT[2][2] = 4096;
+    g.V0[0] = -800; g.V0[2] = 200; g.H = 400;
+    gte_render_pose_set(&pose);
+    PSXRecomp::GTE::gte_rtps_internal(&g, g.V0, true);
+    if (g.MAC1 != 200 || g.MAC3 != 800 || g.TR[0] != 0)
+        return fail_value("rigid rotation before division",0,0,0,800,g.MAC3);
+    pose = {}; pose.struct_size = sizeof pose;
+    pose.rotation_q12[0] = pose.rotation_q12[4] = pose.rotation_q12[8] = 4096;
+    pose.projection = 1; pose.fx_q16 = 200 << 16; pose.fy_q16 = 100 << 16;
+    pose.cx_delta_q16 = 10 << 16; pose.cy_delta_q16 = -5 * 65536;
+    g = GTEState(); g.RT[0][0] = g.RT[1][1] = g.RT[2][2] = 4096;
+    g.V0[0] = 80; g.V0[1] = 160; g.V0[2] = 800;
+    gte_render_pose_set(&pose);
+    PSXRecomp::GTE::gte_rtps_internal(&g, g.V0, true);
+    if ((int16_t)g.SXY[2] != 30 || (int16_t)(g.SXY[2] >> 16) != 15)
+        return fail_value("asymmetric projection",0,0,0,30,g.SXY[2] & 65535);
+    pose.projection_h_ref = 400; g.H = 133;
+    gte_render_pose_set(&pose);
+    PSXRecomp::GTE::gte_rtps_internal(&g, g.V0, true);
+    if ((int16_t)g.SXY[2] != 16 || (int16_t)(g.SXY[2] >> 16) != 1)
+        return fail_value("authored focal ratio",0,0,0,16,g.SXY[2] & 65535);
+    pose = {}; gte_render_pose_set(&pose);
+    std::puts("PASS: rigid rotation and asymmetric projection before division");
+    return 0;
+}
+
 int test_render_view_parallax() {
     const int32_t zero[3] = {0, 0, 0}, offset[3] = {24, 0, 0};
     int shifts[2] = {};
@@ -775,6 +807,7 @@ int main() {
     if (int rc = test_precise_nclip_is_title_scoped()) return rc;
     if (int rc = test_precision_speculative_transaction()) return rc;
     if (int rc = test_render_view_parallax()) return rc;
+    if (int rc = test_render_pose()) return rc;
     std::puts("PASS: canonical GTE register helpers match GTEState transfer oracle");
     return 0;
 }

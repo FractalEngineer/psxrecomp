@@ -1762,3 +1762,15 @@ on a fixed region -> next.
   `PSX_PRECISE_SLICE` left in tree (inert). −8 mechanism located in
   code_generator.cpp (delay-slot-is-leader undercount). Tree builds + boots clean.
   NEXT: P1 (cycle-audit) → P2 (delay-slot ownership fix).
+
+
+### 2026-10-02: opt-in rigid stereo views and OpenXR
+
+Extended host-only render ambient to a rigid transform/asymmetric projection,
+restored by the existing transaction on normal return and nested watchdog.
+Faithful identity and canonical GTE oracle tests pass. Optional Win32 OpenXR
+uses actual paired poses/FOV/time and fresh atomic stereo textures. No guest
+CPU layout/codegen/timing changes. Its first frame loop follows guest draw
+cadence; independent headset-rate scheduling remains future work. TCP measures
+startup, version requirement, real submissions and located/submitted metadata.
+See docs/OPENXR_RENDERING.md and UPSTREAM_PENDING.md for measured limits.
