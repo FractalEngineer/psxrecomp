@@ -371,3 +371,43 @@ Startup correction: sandboxed runs returned system -35 with zero submissions,
 whereas the otherwise identical external launch succeeded. Do not report that
 as evidence the user's active headset was unavailable. No general XR retry or
 runtime selection change is included in this patch.
+
+
+## Native OpenXR boot/menu/video surface (2026-10-03 checkpoint)
+
+Generic `psx_mod_openxr_native_surface(distance,width,units)` selects a persistent
+native-screen VIEW-space quad. Actual fresh VRAM/wide/CPU/blank presentation is
+copied before host OSD, without replay or a retained stereo pair. Hold-last and
+interpolated/stereo sources cannot masquerade as a fresh native frame. The
+application disables the surface before gameplay begins its ordinary fresh-pair
+projection submission. Distance zero disables it; finite/range checks, replay
+and open-frame gates apply. Native UI pumps XR even for unchanged screen pixels.
+Default rendering and guest timing are unchanged.
+
+Files: runtime/include/{mod_plugins,psx_openxr,gpu_gl_renderer}.h and
+runtime/src/{gpu_gl_renderer,psx_openxr,debug_server}.c. Existing TCP openxr_stats
+adds submitted_source (1 pair, 2 native), native_submitted and
+submitted_native_frame. Native sources have pair/cycle zero. video_info adds
+actual gl_swap_interval (-2 unavailable). No new command or printf inspection.
+The GL regression runner links real compiled-out XR cleanup; off-XR stats tests
+check neutral native metadata. Validation used runtime mirrors in the game's
+6134f8b8 submodule before this checkpoint. User authorized committing and pushing
+the framework first, then updating the game pin.
+
+Validation: SDK Debug/Release builds, strict compiled-out XR/menu input tests,
+render guards and 332-command index pass. Quest/VDXR boot snapshot: 554 native
+quads, zero empty/failure, save generation 0/last slot -1. A later natural
+handoff reaches fresh-pair projection (4029 total XR submissions at inspection).
+User accepted all menus and controls. First native attempt incorrectly supplied
+1856x1392 drawable dimensions to PSX view math and submitted zero layers. Fixed
+by keeping unused PSX matrices at 512x240 while copying full drawable content.
+This is a recorded correction, not evidence of headset unavailability.
+
+The game launcher alone disables desktop VSync for XR, retaining the guest
+real-time deadline cap. Native MDEC interval controls: actual interval 1 yields
+49.547 guest Hz / 11.776 decode Hz; actual interval 0 yields 59.195 / 13.686.
+Turbo is off in both. User confirms sound/framerate fixed across boot/menu/
+briefing. Adjacent TCP timing is not compositor or audio-underrun telemetry.
+An optional native-texel bicubic trial passed source-owned GL controls at 1x/4x
+and measured 58.462 guest Hz, but user preferred the earlier presentation;
+filter implementation was removed and original presentation restored.

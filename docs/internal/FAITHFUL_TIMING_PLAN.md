@@ -1835,3 +1835,20 @@ docs/OPENXR_RENDERING.md and UPSTREAM_PENDING.md. Headset cadence remains open.
   resumed projection. User accepted rifle appearance/menu comfort. System -35
   was resolved by external launch, not a headset readiness change. See
   UPSTREAM_PENDING.md for PR inventory and measured limits.
+
+
+- **2026-10-03 (native XR startup / desktop pacing):** Added opt-in native fresh
+  present quads and source metadata, plus actual swap-interval TCP inspection.
+  No faithful rendering, decode, guest cycle or timing default changed. MoH VR
+  launcher uses desktop VSync 0 while deadline guest cap remains active. Native
+  MDEC controls measured 49.547 guest Hz at actual interval 1 and 59.195 at 0,
+  turbo off. User confirms sound/framerate fixed; full boot/menu VR accepted,
+  no save load. Initial drawable-to-PSX-math zero-layer error corrected and
+  documented. Bicubic presentation trial rejected and removed. SDK builds,
+  strict input tests, guards/index pass. Work remains local/uncommitted at user
+  instruction; framework inventory in UPSTREAM_PENDING.md.
+
+- **2026-10-03 (checkpoint authorization):** User authorized committing and
+  pushing the accepted native XR startup and pacing work. Framework checkpoint
+  precedes the game pin update and required regeneration. Rejected bicubic
+  code remains removed; no new guest timing or rendering changes.

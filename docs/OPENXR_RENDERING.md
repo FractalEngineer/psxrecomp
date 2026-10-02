@@ -210,3 +210,35 @@ That acceptance does not establish shot/barrel alignment or other UI screens.
 Sandboxed startup falsely appeared to be device unavailability: xrGetSystem
 returned -35, with no sessions or submissions. The same launch outside the
 tool sandbox succeeded; do not attribute those failed starts to user readiness.
+
+
+## Native startup surface
+
+`psx_mod_openxr_native_surface(distance_m,width_m,units_per_meter)` permits boot,
+menus and videos to enter VR before any gameplay stereo hook. It persists until
+disabled with distance zero. Valid distance is 0.25..20m, width positive and at
+most 10m, units 1..65536; values must be finite. It refuses during replay or an
+open XR frame and when XR is compiled out. The application owns mode selection.
+
+Only a fresh native present arms submission. The actual letterbox rectangle is
+copied from GL_BACK before host OSD, upright, to a VIEW-space quad whose height
+preserves the presented aspect. This path never replays guest draws or submits
+a stale pair. Native surface mode excludes application pair-begin ownership;
+disable it before beginning gameplay projection. Unchanged native frames still
+pump XR. The unused PSX matrices use bounded 512x240 dimensions, independently
+of the full drawable copy and XR swapchain resolution.
+
+`openxr_stats.submitted_source`: 1 fresh stereo pair, 2 fresh native surface.
+`native_submitted` counts successful native submissions; submitted_native_frame
+latches their guest frame. Native pair/cycle metadata is zero. These are latched
+successful-submit diagnostics, not proof of the layer currently visible.
+`video_info.gl_swap_interval` reports the driver setting, -2 if unavailable.
+
+MoH normal boot with save generation zero successfully entered native quads,
+then genuine stereo gameplay; the user accepted boot/menu visibility and input.
+The VR launcher sets PSX_VSYNC=0 to avoid a second desktop wait beside XR waiting.
+It does not enable turbo or remove the deadline guest speed cap. Filtered native
+MDEC control intervals improved from 49.547 to 59.195 guest Hz; user confirmed
+sound/framerate fixed. Videos retain existing presentation: a bicubic trial was
+rejected by user preference. Decoder/compression quality has not been compared
+to an independent oracle here; no assertion of decoder fidelity is made.

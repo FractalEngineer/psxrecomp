@@ -7,6 +7,8 @@
 #include <math.h>
 static PSXOpenXRStats s_stats;
 static uint64_t s_pair_id,s_pair_cycle;
+static uint32_t s_source;
+static uint64_t s_native_frame;
 static double s_quad_distance,s_quad_width,s_quad_height;
 static PSXModOpenXRInput s_input;
 static PSXModOpenXRHands s_hands;
@@ -66,7 +68,8 @@ int psx_openxr_input_override(const PSXModOpenXRInput *input) {
 }
 #endif
 void psx_openxr_input_snapshot(PSXModOpenXRInput *out) { if(out)*out=s_input; }
-void psx_openxr_pair_metadata(uint64_t id,uint64_t cycle){s_pair_id=id;s_pair_cycle=cycle;}
+void psx_openxr_pair_metadata(uint64_t id,uint64_t cycle){s_pair_id=id;s_pair_cycle=cycle;s_source=1;s_native_frame=0;}
+void psx_openxr_native_metadata(uint64_t frame){s_pair_id=s_pair_cycle=0;s_source=2;s_native_frame=frame;}
 #if defined(PSX_OPENXR)
 #include "host_time.h"
 #define WIN32_LEAN_AND_MEAN
@@ -435,6 +438,7 @@ int psx_openxr_begin(int width,int height,double units) {
 #if defined(PSX_OPENXR)
     if(!s_stats.enabled || s_stats.frame_open)return 0;
     s_quad_distance=s_quad_width=s_quad_height=0;
+    s_pair_id=s_pair_cycle=s_native_frame=0;s_source=0;
     hands_clear();
     s_stats.units_per_meter=units;
     if(!s_stats.initialized && !initialize()) {
@@ -555,6 +559,8 @@ int psx_openxr_end(int keep,PSXOpenXRCopy copy) {
         s_stats.submitted++;s_stats.submitted_pair_id=s_pair_id;
         s_stats.submitted_guest_cycle=s_pair_cycle;s_stats.submitted_predicted_time=(uint64_t)s_time;
         s_stats.submitted_layer=quad?2:1;
+        s_stats.submitted_source=s_source;s_stats.submitted_native_frame=s_native_frame;
+        if(s_source==2)s_stats.native_submitted++;
         if(quad){s_stats.quad_submitted++;s_stats.quad_distance_m=s_quad_distance;
             s_stats.quad_width_m=s_quad_width;s_stats.quad_height_m=s_quad_height;}
     } else s_stats.empty++;

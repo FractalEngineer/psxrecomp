@@ -396,6 +396,13 @@ int psx_mod_openxr_end(int pair_rendered);
  * Dimensions and distance are meters; zero distance restores projection.
  * Requests reset at begin/end and never affect faithful guest rendering. */
 int psx_mod_openxr_quad(double distance_m, double width_m, double height_m);
+/* Opt-in native presentation surface for boot, videos and menus. Copies the
+ * freshly drawn desktop content before host overlays, without guest replay.
+ * Zero distance disables it. Applications disable it before scene begin and
+ * re-enable when their scene renderer is inactive. Dimensions are meters;
+ * height follows the presented content aspect. No retained stereo substitution. */
+int psx_mod_openxr_native_surface(double distance_m, double width_m,
+                                  double units_per_meter);
 void psx_mod_openxr_recenter(void);
 /* Fresh action sample at the offline input boundary, never in an eye replay.
  * Positive Y is forward/up in XR. active[] refers only to thumbsticks;

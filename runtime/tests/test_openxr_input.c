@@ -11,6 +11,7 @@ int main(void) {
     assert(!psx_openxr_quad(0,0,0));
     PSXOpenXRStats stats;psx_openxr_stats(&stats);
     assert(!stats.submitted_layer && !stats.quad_submitted);
+    assert(!stats.submitted_source && !stats.native_submitted && !stats.submitted_native_frame);
     PSXModOpenXRInput p={0},s={0};
     p.struct_size=sizeof p;
     assert(psx_openxr_input(&p) && !p.focused && p.stick[0][0]==0 && !p.synthetic);

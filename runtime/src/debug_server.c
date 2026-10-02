@@ -8102,6 +8102,7 @@ static void handle_openxr_stats(int id, const char *json) {
              "\"predicted_time\":%llu,\"ipd_m\":%.6f,\"units_per_meter\":%.6f,"
              "\"gl_version\":%llu,\"min_gl_version\":%llu,\"max_gl_version\":%llu,"
              "\"submitted_layer\":%u,\"quad_submitted\":%llu,"
+             "\"submitted_source\":%u,\"native_submitted\":%llu,\"submitted_native_frame\":%llu,"
              "\"quad_distance_m\":%.6f,\"quad_width_m\":%.6f,\"quad_height_m\":%.6f}", id,s.compiled,s.enabled,
              s.initialized,s.running,s.state,s.tracking,s.frame_open,s.result,
              s.stage?s.stage:"off",s.runtime,s.last_failure?s.last_failure:"",s.last_failure_result,
@@ -8110,7 +8111,9 @@ static void handle_openxr_stats(int id, const char *json) {
              (unsigned long long)s.failures,(unsigned long long)s.predicted_time,s.ipd_m,s.units_per_meter,
              (unsigned long long)s.gl_version,(unsigned long long)s.min_gl_version,
              (unsigned long long)s.max_gl_version,s.submitted_layer,
-             (unsigned long long)s.quad_submitted,s.quad_distance_m,s.quad_width_m,s.quad_height_m);
+             (unsigned long long)s.quad_submitted,s.submitted_source,
+             (unsigned long long)s.native_submitted,(unsigned long long)s.submitted_native_frame,
+             s.quad_distance_m,s.quad_width_m,s.quad_height_m);
 }
 static void handle_openxr_views(int id,const char *json) {
     PSXOpenXRStats s; (void)json;psx_openxr_stats(&s);
@@ -9362,6 +9365,7 @@ static void handle_video_info(int id, const char *json)
     send_fmt("{\"id\":%d,\"ok\":true,\"backend\":\"%s\",\"preset\":%d,"
              "\"reference_lines\":%d,\"requested_scale\":%d,\"effective_scale\":%d,"
              "\"internal_lines\":%u,\"gl\":%d,\"gl_max_dim\":%d,\"gl_max_scale\":%d,"
+             "\"gl_swap_interval\":%d,"
              "\"gl_clamp_reason\":%d,\"gl_alloc_retries\":%d,\"gl_budget_mib\":%d,"
              "\"fbo_w\":%d,\"fbo_h\":%d,\"hidpi_window\":%d,\"window_w\":%d,"
              "\"window_h\":%d,\"drawable_w\":%d,\"drawable_h\":%d,"
@@ -9373,7 +9377,7 @@ static void handle_video_info(int id, const char *json)
              id, gr_backend() == GR_BACKEND_OPENGL ? "opengl"
                  : gr_backend() == GR_BACKEND_VULKAN ? "vulkan" : "software",
              preset, ref, req, eff, di.height * (unsigned)(eff > 0 ? eff : 1), gl,
-             si.max_dim, si.max_scale, si.clamp_reason, si.alloc_retries, si.budget_mib,
+             si.max_dim, si.max_scale, gl_renderer_get_swap_interval(), si.clamp_reason, si.alloc_retries, si.budget_mib,
              si.fbo_w, si.fbo_h, hidpi, ww, wh, pw, ph, di.display_x, di.display_y,
              di.width, di.height,
              si.hr_scale, si.windowed, si.window_x, si.window_w, si.window_fbo_w,
