@@ -1,4 +1,5 @@
 #include "gte.h"
+#include "gte_view.h"
 #include "cpu_state.h"
 #include "nd_intro_ot.h"
 #include "pgxp.h"
@@ -545,6 +546,13 @@ static inline int gte_sxx(int32_t p){ int v=p&0xFFFF; return v>=0x8000? v-0x1000
 static inline int gte_syy(int32_t p){ int v=(p>>16)&0xFFFF; return v>=0x8000? v-0x10000:v; }
 
 static int32_t gte_h_scaled(const GTEState* gte);
+static int32_t s_render_view[3];
+extern "C" void gte_render_view_get(int32_t xyz[3]) {
+    for (int i = 0; i < 3; i++) xyz[i] = s_render_view[i];
+}
+extern "C" void gte_render_view_set(const int32_t xyz[3]) {
+    for (int i = 0; i < 3; i++) s_render_view[i] = xyz[i];
+}
 
 static void gte_rtp_record(const GTEState* g, uint32_t cmd) {
     if (s_gte_replay_sandbox) return;
@@ -837,7 +845,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
 
     // Step 1: Matrix multiplication + translation
     auto dot = [&](int row, int mac_num) {
-        int64_t acc = (int64_t)gte->TR[row] * 4096 +
+        int64_t acc = ((int64_t)gte->TR[row] + s_render_view[row]) * 4096 +
                       (int64_t)gte->RT[row][0] * V[0];
         acc = gte_mac44_stage(gte, acc, mac_num);
         acc += (int64_t)gte->RT[row][1] * V[1];

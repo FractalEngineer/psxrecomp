@@ -8086,6 +8086,47 @@ static void handle_render_pass_refuse(int id, const char *json)
              (unsigned)psx_mod_render_pass_status());
 }
 
+static void handle_stereo_stats(int id, const char *json) {
+    RenderStereoStats s;
+    GLRenderStereoDiag g;
+    (void)json;
+    render_stereo_get_stats(&s); gl_renderer_stereo_diag(&g);
+    send_fmt("{\"id\":%d,\"ok\":true,\"attempts\":%llu,\"pairs\":%llu,"
+             "\"refused\":%llu,\"failed\":%llu,\"shed\":%llu,\"status\":%u,"
+             "\"last_pair_id\":%llu,\"last_guest_cycle\":%llu,"
+             "\"eye_cycles\":[%llu,%llu],\"eye_hashes\":[\"%016llx\",\"%016llx\"],"
+             "\"eye_view\":[[%d,%d,%d],[%d,%d,%d]],"
+             "\"last_eye\":%d,\"last_failure\":\"%s\","
+             "\"last_failed_attempt\":%llu,\"last_failed_eye\":%d,"
+             "\"last_failed_reason\":\"%s\",\"retained_pair_id\":%llu,"
+             "\"last_pair_ms\":%.3f,\"avg_pair_ms\":%.3f,"
+             "\"published\":{\"valid\":%u,\"pair_id\":%llu,\"guest_cycle\":%llu,"
+             "\"width\":%u,\"height\":%u,\"staged_mask\":%u,\"mode\":%u,\"presents\":%llu}}",
+             id, (unsigned long long)s.attempts, (unsigned long long)s.pairs,
+             (unsigned long long)s.refused, (unsigned long long)s.failed,
+             (unsigned long long)s.shed, psx_mod_render_stereo_status(),
+             (unsigned long long)s.last_pair_id, (unsigned long long)s.last_guest_cycle,
+             (unsigned long long)s.eye_cycle[0], (unsigned long long)s.eye_cycle[1],
+             (unsigned long long)s.eye_hash[0], (unsigned long long)s.eye_hash[1],
+             s.eye_view[0][0], s.eye_view[0][1], s.eye_view[0][2],
+             s.eye_view[1][0], s.eye_view[1][1], s.eye_view[1][2],
+             s.last_eye, s.last_failure ? s.last_failure : "",
+             (unsigned long long)s.last_failed_attempt, s.last_failed_eye,
+             s.last_failed_reason ? s.last_failed_reason : "",
+             (unsigned long long)s.retained_pair_id,
+             s.last_pair_ms, s.avg_pair_ms, g.valid, (unsigned long long)g.pair_id,
+             (unsigned long long)g.guest_cycle, g.width, g.height, g.staged_mask,
+             g.mode, (unsigned long long)g.presents);
+}
+static void handle_stereo_dump(int id, const char *json) {
+    char dir[400];
+    int count = json_get_int(json, "count", 1);
+    if (!json_get_str(json, "path", dir, sizeof dir)) { send_err(id, "missing path"); return; }
+    if (count < 1 || count > 100) { send_err(id, "count must be 1..100"); return; }
+    gl_renderer_stereo_dump_arm(dir, count);
+    send_fmt("{\"id\":%d,\"ok\":true,\"count\":%d}", id, count);
+}
+
 /* render_pass_dump path=<dir> count=<n>: write the images (the game's own
  * frame, then each render pass in phase order) of the next n frames that get
  * render passes, as <dir>/g<frame>_<index>_a<phase q16>.png. */
@@ -9577,7 +9618,7 @@ extern uint64_t gl_renderer_pres_total(void);
 
 static void handle_gl_present_ring(int id, const char *json)
 {
-    static const char *path_name[5] = { "vram", "wide", "cpu", "blank", "interp" };
+    static const char *path_name[6] = { "vram", "wide", "cpu", "blank", "interp", "stereo" };
     int n = json_get_int(json, "n", 300);
     if (n < 1) n = 1;
     if (n > 4096) n = 4096;
@@ -9596,7 +9637,7 @@ static void handle_gl_present_ring(int id, const char *json)
         pos += snprintf(buf + pos, bufsz - pos,
                         "%s[%llu,%u,\"%s\",%u,[%d,%d,%d,%d],[%d,%d,%d,%d],[%u,%u,%u],%u,[%u,%u,%u,%u]]",
                         first ? "" : ",", (unsigned long long)s, e.frame,
-                        e.path < 5 ? path_name[e.path] : "?", e.t_ms,
+                        e.path < 6 ? path_name[e.path] : "?", e.t_ms,
                         e.dx, e.dy, e.w, e.h, e.lx, e.ly, e.lw, e.lh,
                         e.px_r, e.px_g, e.px_b, e.glerr,
                         e.src_r, e.src_g, e.src_b, e.src_valid);
@@ -14184,6 +14225,8 @@ static const CmdEntry s_commands[] = {
     { "gl_ws_ablate",      handle_gl_ws_ablate },
     { "gl_interp",         handle_gl_interp },
     { "render_pass_stats", handle_render_pass_stats },
+    { "stereo_stats", handle_stereo_stats },
+    { "stereo_dump", handle_stereo_dump },
     { "render_pass_dump",  handle_render_pass_dump },
     { "render_pass_refuse", handle_render_pass_refuse },
     { "gl_wide_fast",      handle_gl_wide_fast },

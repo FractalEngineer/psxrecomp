@@ -213,6 +213,16 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-10-02 (paired stereo enhancement):** Factored the frozen transaction
+  for explicit per-eye capture without temporal phase or interpolation gates.
+  Both captures stage privately and publish together; right-eye abort tests
+  preserve the previous pair and restore machine state and host nesting.
+  A scoped GTE camera-space translation leaves guest TR unchanged and restores
+  on rollback. GTE tests show depth-dependent displacement (12px/3px at
+  Z=800/3200 with H=400 and X=24). TCP pair diagnostics/dumps and opt-in SBS
+  presentation added. Guest timing remains frozen during callbacks. Live game
+  build and paired-image validation are pending; see UPSTREAM_PENDING.md.
+
 - **2026-10-02 (VR enhancement observability):** Added failure-site pass-call
   counters and latched begin/checkpoint refusal inputs to TCP `render_pass_stats`.
   Existing empty-plan `refused` semantics retained. Sandbox and watchdog rollback

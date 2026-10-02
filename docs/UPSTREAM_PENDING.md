@@ -5,6 +5,34 @@ Reference upstream base: `3505f2a0` (`master`). The Medal of Honor project pins
 this branch through its framework submodule. This file inventories pending work;
 it does not assert upstream acceptance or stereo completion.
 
+## Paired stereo enhancement (implementation pending live validation)
+
+The new paired API shares the existing frozen-time transaction and restore
+internals, but has explicit eye IDs and no interpolation or phase-plan gate.
+Two staging textures become visible together only after both eyes complete.
+Failure discards staging and retains the preceding complete pair; host cost
+shedding skips whole pairs. Ordinary OpenGL 15-bit GPU-authoritative rendering
+is supported initially; native-wide, window tiles, depth24 and dual raster are
+refused. Side-by-side presentation is explicitly enabled by the plugin.
+
+A scoped camera-space GTE view offset is added before RTPS/RTPT perspective
+division without rewriting guest TR registers. The transaction restores this
+host ambient on normal return and watchdog rollback. Its default is zero.
+TCP `stereo_stats` and `stereo_dump` expose eye checkpoints, actual sampled
+offsets, pair outcomes, retained-pair failure records, textures and manifests.
+The temporal API retains its existing gates and phase contract.
+
+Files: `runtime/include/{mod_plugins,render_pass,gpu_gl_renderer,gte_view}.h`,
+`runtime/src/{render_pass,gpu_gl_renderer,debug_server}.c`, `runtime/src/gte.cpp`,
+render-pass and GTE tests, `docs/STEREO_RENDERING.md`, generated command index.
+
+Validation so far: sandbox, nested watchdog and source guard tests passed.
+The right-eye nested watchdog test retains the previous pair, restores CPU/RAM/
+host nesting/view ambient and permits the next pair. GTE tests measure 12px
+versus 3px at depths 800 and 3200, match explicit pre-divide translation, and
+verify unchanged TR and repeatability. Full game build/live stereo measurements
+are the next step; this entry does not claim a working headset or calibrated IPD.
+
 ## Render-pass refusal diagnostics
 
 Commits: `257a88b0` (implementation), `ee7a4afc` (live verification notes).

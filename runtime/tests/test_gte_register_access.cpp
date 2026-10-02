@@ -1,5 +1,6 @@
 #include "cpu_state.h"
 #include "gte.h"
+#include "gte_view.h"
 
 #include <array>
 #include <cstdint>
@@ -727,6 +728,39 @@ int test_precision_speculative_transaction() {
     return 0;
 }
 
+int test_render_view_parallax() {
+    const int32_t zero[3] = {0, 0, 0}, offset[3] = {24, 0, 0};
+    int shifts[2] = {};
+    for (int i = 0; i < 2; ++i) {
+        GTEState base;
+        base.RT[0][0] = base.RT[1][1] = base.RT[2][2] = 4096;
+        base.H = 400; base.OFX = 256 << 16; base.OFY = 120 << 16;
+        base.V0[2] = i ? 3200 : 800;
+        GTEState baseline = base, eye = base, expected = base, repeat = base;
+        gte_render_view_set(zero);
+        PSXRecomp::GTE::gte_rtps_internal(&baseline, baseline.V0, true);
+        expected.TR[0] += 24;
+        PSXRecomp::GTE::gte_rtps_internal(&expected, expected.V0, true);
+        gte_render_view_set(offset);
+        PSXRecomp::GTE::gte_rtps_internal(&eye, eye.V0, true);
+        PSXRecomp::GTE::gte_rtps_internal(&repeat, repeat.V0, true);
+        if (eye.SXY[2] != expected.SXY[2] || eye.SZ[3] != expected.SZ[3] ||
+            eye.MAC1 != expected.MAC1 || eye.TR[0] != base.TR[0] ||
+            eye.SXY[2] != repeat.SXY[2]) {
+            gte_render_view_set(zero);
+            return fail_value("render view equals pre-divide translation", 0, 0, 0,
+                              expected.SXY[2], eye.SXY[2]);
+        }
+        shifts[i] = (int16_t)eye.SXY[2] - (int16_t)baseline.SXY[2];
+    }
+    gte_render_view_set(zero);
+    if (shifts[0] != 12 || shifts[1] != 3)
+        return fail_value("near/far render-view displacement", 0, 0, 0, 12u,
+                          static_cast<uint32_t>(shifts[0]));
+    std::puts("PASS: view offset gives 12px at Z=800, 3px at Z=3200; TR unchanged; no accumulation");
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -740,6 +774,7 @@ int main() {
     if (int rc = test_precise_sxy_invalidation()) return rc;
     if (int rc = test_precise_nclip_is_title_scoped()) return rc;
     if (int rc = test_precision_speculative_transaction()) return rc;
+    if (int rc = test_render_view_parallax()) return rc;
     std::puts("PASS: canonical GTE register helpers match GTEState transfer oracle");
     return 0;
 }
