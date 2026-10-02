@@ -7,6 +7,7 @@
 #include <math.h>
 static PSXOpenXRStats s_stats;
 static uint64_t s_pair_id,s_pair_cycle;
+static double s_quad_distance,s_quad_width,s_quad_height;
 static PSXModOpenXRInput s_input;
 static PSXModOpenXRHands s_hands;
 static uint64_t s_hands_sequence, s_hands_sample_ms;
@@ -80,6 +81,7 @@ static XrInstance s_instance;
 static XrSystemId s_system;
 static XrSession s_session;
 static XrSpace s_space;
+static XrSpace s_view_space;
 static XrActionSet s_actions;
 static XrAction s_stick;
 static XrAction s_trigger,s_squeeze,s_click[4];
@@ -336,6 +338,7 @@ void psx_openxr_shutdown(void) {
         s_chain[eye]=XR_NULL_HANDLE;free(s_images[eye]);s_images[eye]=NULL;s_count[eye]=0;
     }
     if(s_space)xrDestroySpace(s_space);s_space=XR_NULL_HANDLE;
+    if(s_view_space)xrDestroySpace(s_view_space);s_view_space=XR_NULL_HANDLE;
     if(s_session)xrDestroySession(s_session);s_session=XR_NULL_HANDLE;
     if(s_actions)xrDestroyActionSet(s_actions);s_actions=XR_NULL_HANDLE;s_stick=XR_NULL_HANDLE;
     s_trigger=s_squeeze=XR_NULL_HANDLE;memset(s_click,0,sizeof s_click);
@@ -344,6 +347,7 @@ void psx_openxr_shutdown(void) {
     s_origin_valid=0;s_origin_reset_time=0;s_stats.initialized=s_stats.running=s_stats.tracking=s_stats.frame_open=0;
 #endif
     s_stats.enabled=0;
+    s_quad_distance=s_quad_width=s_quad_height=0;
     memset(&s_input,0,sizeof s_input);
     hands_clear();
 #ifndef PSX_NO_DEBUG_TOOLS
@@ -430,6 +434,7 @@ int psx_openxr_input(PSXModOpenXRInput *out) {
 int psx_openxr_begin(int width,int height,double units) {
 #if defined(PSX_OPENXR)
     if(!s_stats.enabled || s_stats.frame_open)return 0;
+    s_quad_distance=s_quad_width=s_quad_height=0;
     hands_clear();
     s_stats.units_per_meter=units;
     if(!s_stats.initialized && !initialize()) {
@@ -492,12 +497,28 @@ int psx_openxr_begin(int width,int height,double units) {
 #endif
     return 0;
 }
+int psx_openxr_quad(double distance,double width,double height) {
+    if(!isfinite(distance) || !isfinite(width) || !isfinite(height))return 0;
+    if(distance!=0 && (distance<.25 || distance>20 || width<=0 || width>20 || height<=0 || height>20))return 0;
+#if defined(PSX_OPENXR)
+    if(!s_stats.frame_open || !s_stats.tracking)return 0;
+    if(distance && !s_view_space) {
+        XrReferenceSpaceCreateInfo space={XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+        space.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_VIEW;space.poseInReferenceSpace.orientation.w=1;
+        if(!check(xrCreateReferenceSpace(s_session,&space,&s_view_space),"quad_view_space"))return 0;
+    }
+    s_quad_distance=distance;s_quad_width=distance?width:0;s_quad_height=distance?height:0;return 1;
+#else
+    return 0;
+#endif
+}
 int psx_openxr_end(int keep,PSXOpenXRCopy copy) {
 #if defined(PSX_OPENXR)
     if(!s_stats.frame_open)return 0;
     XrCompositionLayerProjectionView pv[2]={{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     int complete=keep && copy && s_stats.tracking;
-    for(int eye=0;eye<2 && complete;eye++) {
+    int quad=s_quad_distance>0;
+    for(int eye=0;eye<(quad?1:2) && complete;eye++) {
         uint32_t index=0;
         XrSwapchainImageAcquireInfo ai={XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
         if(!check(xrAcquireSwapchainImage(s_chain[eye],&ai,&index),"acquire")){complete=0;break;}
@@ -520,7 +541,12 @@ int psx_openxr_end(int keep,PSXOpenXRCopy copy) {
     }
     XrCompositionLayerProjection layer={XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     layer.space=s_space;layer.viewCount=2;layer.views=pv;
-    const XrCompositionLayerBaseHeader *layers[]={(void*)&layer};
+    XrCompositionLayerQuad surface={XR_TYPE_COMPOSITION_LAYER_QUAD};
+    surface.space=s_view_space;surface.eyeVisibility=XR_EYE_VISIBILITY_BOTH;
+    surface.subImage=pv[0].subImage;surface.pose.orientation.w=1;
+    surface.pose.position.z=(float)-s_quad_distance;
+    surface.size.width=(float)s_quad_width;surface.size.height=(float)s_quad_height;
+    const XrCompositionLayerBaseHeader *layers[]={quad?(void*)&surface:(void*)&layer};
     XrFrameEndInfo end={XR_TYPE_FRAME_END_INFO};end.displayTime=s_time;
     end.environmentBlendMode=XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     end.layerCount=complete?1:0;end.layers=complete?layers:NULL;
@@ -528,8 +554,12 @@ int psx_openxr_end(int keep,PSXOpenXRCopy copy) {
     if(ok && complete) {
         s_stats.submitted++;s_stats.submitted_pair_id=s_pair_id;
         s_stats.submitted_guest_cycle=s_pair_cycle;s_stats.submitted_predicted_time=(uint64_t)s_time;
+        s_stats.submitted_layer=quad?2:1;
+        if(quad){s_stats.quad_submitted++;s_stats.quad_distance_m=s_quad_distance;
+            s_stats.quad_width_m=s_quad_width;s_stats.quad_height_m=s_quad_height;}
     } else s_stats.empty++;
     if(ok && complete)s_stats.stage="submitted";
+    s_quad_distance=s_quad_width=s_quad_height=0;
     return ok && complete;
 #else
     return 0;

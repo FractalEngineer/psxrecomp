@@ -8100,14 +8100,17 @@ static void handle_openxr_stats(int id, const char *json) {
              "\"last_failure\":\"%s\",\"last_failure_result\":%d,\"view_flags\":%llu,"
              "\"waits\":%llu,\"submitted\":%llu,\"empty\":%llu,\"failures\":%llu,"
              "\"predicted_time\":%llu,\"ipd_m\":%.6f,\"units_per_meter\":%.6f,"
-             "\"gl_version\":%llu,\"min_gl_version\":%llu,\"max_gl_version\":%llu}", id,s.compiled,s.enabled,
+             "\"gl_version\":%llu,\"min_gl_version\":%llu,\"max_gl_version\":%llu,"
+             "\"submitted_layer\":%u,\"quad_submitted\":%llu,"
+             "\"quad_distance_m\":%.6f,\"quad_width_m\":%.6f,\"quad_height_m\":%.6f}", id,s.compiled,s.enabled,
              s.initialized,s.running,s.state,s.tracking,s.frame_open,s.result,
              s.stage?s.stage:"off",s.runtime,s.last_failure?s.last_failure:"",s.last_failure_result,
              (unsigned long long)s.view_flags,(unsigned long long)s.waits,
              (unsigned long long)s.submitted,(unsigned long long)s.empty,
              (unsigned long long)s.failures,(unsigned long long)s.predicted_time,s.ipd_m,s.units_per_meter,
              (unsigned long long)s.gl_version,(unsigned long long)s.min_gl_version,
-             (unsigned long long)s.max_gl_version);
+             (unsigned long long)s.max_gl_version,s.submitted_layer,
+             (unsigned long long)s.quad_submitted,s.quad_distance_m,s.quad_width_m,s.quad_height_m);
 }
 static void handle_openxr_views(int id,const char *json) {
     PSXOpenXRStats s; (void)json;psx_openxr_stats(&s);

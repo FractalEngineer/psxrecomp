@@ -338,3 +338,35 @@ one nesting repair and 52 restore checks with zero mismatches. A subsequent
 slot-5 load advanced generation 1 -> 2 with pending=0 and last_ok=1; later
 pairs recovered. Raw evidence is ignored in game analysis/vr-proof/
 weapon-wrapper-fixed; compact game receipt will retain these results.
+
+
+## Frame-local OpenXR menu quad (2026-10-03)
+
+Add psx_mod_openxr_quad(distance,width,height), a generic application-requested
+UI submission mode. It uses VIEW space and the fresh stereo pair's left image
+for both eyes, retaining the atomic pair gate and empty-frame failure behavior.
+Requests are finite/range checked, refused inside replay and without a tracked
+open frame, and reset each frame. Zero distance restores projection. Normal
+projection rendering, input, guest timing and default faithful behavior stay
+unchanged. VIEW space is lazy and destroyed with the session.
+
+Files: runtime/include/{mod_plugins,psx_openxr}.h,
+runtime/src/{psx_openxr,gpu_gl_renderer,debug_server}.c,
+runtime/tests/test_openxr_input.c, OPENXR_RENDERING.md and timing log.
+Existing TCP openxr_stats exposes submitted_layer, quad_submitted and latched
+quad dimensions; no printf instrumentation or new command (332 total).
+
+Validation: strict compiled-out input tests, debug-less syntax (existing
+unused-parameter exception), render-pass guards and TCP index pass. Both SDK
+builds pass. Desktop game pause produces identical decoded eye images with
+408 restore checks/zero mismatch. A separate injected weapon-wrapper watchdog
+restored the original 280 faces, repaired nesting, passed 932 restore checks,
+and allowed a generation-2 slot reload. These are game transaction controls,
+not a live failed-quad test. Quest 3/VDXR submitted 89 quads at distance 2m,
+width 2m, height 1.5m and resumed projection at the first inspection; user
+comfort is still pending. Full game receipts remain under game docs/reverse.
+
+Startup correction: sandboxed runs returned system -35 with zero submissions,
+whereas the otherwise identical external launch succeeded. Do not report that
+as evidence the user's active headset was unavailable. No general XR retry or
+runtime selection change is included in this patch.

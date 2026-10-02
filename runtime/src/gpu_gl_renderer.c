@@ -6559,6 +6559,10 @@ int psx_mod_openxr_enable(int enabled) {
     return psx_openxr_enable(enabled);
 }
 void psx_mod_openxr_recenter(void) { psx_openxr_recenter(); }
+int psx_mod_openxr_quad(double distance,double width,double height) {
+    if(s_pass_active)return 0;
+    return psx_openxr_quad(distance,width,height);
+}
 int psx_mod_openxr_begin(uint32_t width, uint32_t height, double units) {
     if (s_pass_active || gl_renderer_stereo_unavailable() != PSX_MOD_RENDER_PASS_READY ||
         !width || !height || width > VRAM_W || height > VRAM_H) return 0;

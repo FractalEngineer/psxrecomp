@@ -1825,3 +1825,13 @@ docs/OPENXR_RENDERING.md and UPSTREAM_PENDING.md. Headset cadence remains open.
   pending. Verification off, no new rollback proof or headset cadence claim.
   Framework documentation only; runtime tested at 35b209d4. Owned game closed.
   See UPSTREAM_PENDING.md and game VR_WEAPON_QUEST_RECEIPT.json.
+
+
+- **2026-10-03 (opt-in XR menu surface):** Generic frame-local VIEW-space quad
+  API shares fresh-pair submission/rollback without guest timing, input or
+  default-render changes. TCP exposes actual layer/dimensions. Strict off-XR
+  tests, debug-less syntax, guards/index and SDK Debug/Release pass. Desktop
+  pause eyes identical; Quest/VDXR submitted a 2m-distant 2 x 1.5m surface and
+  resumed projection. Comfort remains pending. Sandboxed system -35 startup
+  was resolved by external launch, not a headset readiness change. See
+  UPSTREAM_PENDING.md for PR inventory and measured limits.

@@ -391,6 +391,11 @@ int psx_mod_openxr_enable(int enabled);
 int psx_mod_openxr_begin(uint32_t width, uint32_t height, double units_per_meter);
 int psx_mod_openxr_view(uint32_t eye, PSXModRenderView *view);
 int psx_mod_openxr_end(int pair_rendered);
+/* Frame-local UI surface: the fresh pair's left image is shown to both eyes
+ * on a head-relative quad. Call after begin, outside the draw transaction.
+ * Dimensions and distance are meters; zero distance restores projection.
+ * Requests reset at begin/end and never affect faithful guest rendering. */
+int psx_mod_openxr_quad(double distance_m, double width_m, double height_m);
 void psx_mod_openxr_recenter(void);
 /* Fresh action sample at the offline input boundary, never in an eye replay.
  * Positive Y is forward/up in XR. active[] refers only to thumbsticks;

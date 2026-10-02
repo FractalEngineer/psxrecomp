@@ -175,3 +175,36 @@ tracking-loss behavior and controller-driven game aiming remain unverified.
 
 Contract references: [action pose state](https://registry.khronos.org/OpenXR/specs/1.0/man/html/xrGetActionStatePose.html),
 [Khronos spaces specification](https://github.com/KhronosGroup/OpenXR-Docs/blob/main/specification/sources/chapters/spaces.adoc).
+
+
+## Frame-local menu surface (2026-10-03)
+
+`psx_mod_openxr_quad(distance_m, width_m, height_m)` requests an opaque,
+head-relative UI surface after a successful begin and outside eye replay.
+Distance must be 0.25..20 meters and dimensions positive and at most 20 meters;
+all values must be finite. Zero distance cancels the request. Requests expire
+at begin/end/shutdown; unavailable or untracked frames refuse them.
+
+The application supplies a flat menu image through the existing fresh stereo
+pair transaction. Its left image is copied to one swapchain and submitted as
+an XrCompositionLayerQuad visible to both eyes in lazily created VIEW space,
+at z=-distance. A failed or stale pair still submits zero layers. Gameplay
+keeps the existing two-eye projection contract. No guest timing, input, render
+pass phase or faithful rendering default changes. Game code selects its menu
+state and must render a flat image; the framework does not infer UI semantics.
+
+TCP `openxr_stats` reports last successfully submitted layer (0 none, 1
+projection, 2 quad), cumulative quad_submitted and last quad dimensions.
+Dimensions are latched diagnostics, not evidence of the currently visible
+layer. The command count remains 332. See the
+[Khronos quad contract](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XrCompositionLayerQuad.html).
+
+Compiled-out input tests check invalid/unavailable requests and neutral stats;
+debug-less syntax, render guards and TCP index pass. SDK Debug/Release builds.
+Desktop MoH pause images are identical between eyes and restore checks pass.
+A live Quest 3/VDXR run submitted the requested 2 x 1.5 meter quad at 2 meters,
+then returned to projection on resume (quad counter 89 at first inspection).
+Headset comfort and rifle appearance are separate user acceptance questions.
+Sandboxed startup falsely appeared to be device unavailability: xrGetSystem
+returned -35, with no sessions or submissions. The same launch outside the
+tool sandbox succeeded; do not attribute those failed starts to user readiness.

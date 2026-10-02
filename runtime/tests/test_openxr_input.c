@@ -2,6 +2,15 @@
 #include <assert.h>
 #include <math.h>
 int main(void) {
+    /* UI requests require a live tracked frame. Off/unavailable requests
+     * must leave submission state neutral, including invalid dimensions. */
+    assert(!psx_openxr_quad(2,2,1.5));
+    assert(!psx_openxr_quad(NAN,2,1.5));
+    assert(!psx_openxr_quad(.1,2,1.5));
+    assert(!psx_openxr_quad(2,0,1.5));
+    assert(!psx_openxr_quad(0,0,0));
+    PSXOpenXRStats stats;psx_openxr_stats(&stats);
+    assert(!stats.submitted_layer && !stats.quad_submitted);
     PSXModOpenXRInput p={0},s={0};
     p.struct_size=sizeof p;
     assert(psx_openxr_input(&p) && !p.focused && p.stick[0][0]==0 && !p.synthetic);
