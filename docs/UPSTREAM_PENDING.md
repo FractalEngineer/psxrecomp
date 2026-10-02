@@ -35,12 +35,22 @@ Validation:
 - A game-only hook at its gameplay render-wait entry produced 727 no-op passes
   and verification checks with zero mismatches, aborts or pass-call refusals.
   Two promoted baseline/pass pairs had zero differing decoded RGB pixels.
+- Game commit `93be7f2` adds bounded live fingerprint comparison: two control
+  loads, two no-op loads and a synthetic-watchdog load match every measured
+  fingerprint column and cycle count for 96 post-load frames.
+- Game commit `4c79f77` reconstructs the real slot-1 draw slice without wait/flip.
+  Clearing the rect then rebuilding the scene gives two pixel-identical replay
+  pairs. Clear-only/level-only controls isolate coverage. Full draws and an abort
+  inside real level dispatch match the same 96-frame control timeline; the abort
+  run records one watchdog, 388 subsequent successes and zero restore mismatches.
 
 Evidence lives in the game repo at `vr/proof/pass-diagnostics/`; game commit
-`5e938a3` contains the probe and receipts. These results prove no-op transactions,
-not a complete redraw or stereo. Allocation diagnostics record errors but do not
-change the existing `glTexImage2D` success policy. Live timeline comparison and
-draw/watchdog coverage remain in the game execution plan.
+`5e938a3` contains the initial probe and receipts; `vr/proof/replay-scope/` and
+`vr/proof/scene-replay/` contain subsequent timeline and draw evidence. These
+results establish no-op transactions and a bounded room/weapon/HUD redraw in
+slot 1, not animated-object coverage, every scene mode or stereo. Allocation
+diagnostics record errors but do not change the existing `glTexImage2D` success
+policy. Paired-eye capture/presentation remain in the game execution plan.
 
 Suggested PR scope: refusal diagnostics, tests and associated documentation.
 Keep game-specific hooks and stereo presentation out of this PR.
