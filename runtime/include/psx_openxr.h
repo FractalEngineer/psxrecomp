@@ -29,6 +29,11 @@ void psx_openxr_pair_metadata(uint64_t pair_id,uint64_t cycle);
 void psx_openxr_shutdown(void);
 void psx_openxr_recenter(void);
 void psx_openxr_stats(PSXOpenXRStats *out);
+int psx_openxr_input(PSXModOpenXRInput *out);
+void psx_openxr_input_snapshot(PSXModOpenXRInput *out);
+#ifndef PSX_NO_DEBUG_TOOLS
+int psx_openxr_input_override(const PSXModOpenXRInput *input);
+#endif
 #ifdef __cplusplus
 }
 #endif

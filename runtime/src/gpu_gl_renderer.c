@@ -6568,6 +6568,10 @@ int psx_mod_openxr_begin(uint32_t width, uint32_t height, double units) {
 int psx_mod_openxr_view(uint32_t eye, PSXModRenderView *view) {
     return psx_openxr_view(eye, view);
 }
+int psx_mod_openxr_input(PSXModOpenXRInput *input) {
+    if (s_pass_active) return 0;
+    return psx_openxr_input(input);
+}
 static int openxr_copy_eye(uint32_t eye, uint32_t texture, int w, int h) {
     StereoPair *p = &s_stereo_pair[s_stereo_current];
     GLint read_fbo, draw_fbo; GLuint target = 0;

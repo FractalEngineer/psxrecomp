@@ -1,4 +1,5 @@
 #include "psx_openxr.h"
+#include "mod_controller_source.h"
 /*
  * debug_server.c -- TCP debug server for PSX recomp v4
  *
@@ -8139,6 +8140,39 @@ static void handle_openxr_control(int id,const char *json) {
     handle_openxr_stats(id,json);
 }
 
+/* Snapshot only: querying never syncs actions or consumes a controller sample. */
+static void handle_openxr_input(int id,const char *json) {
+    (void)json;
+    PSXModOpenXRInput s; psx_openxr_input_snapshot(&s);
+    send_fmt("{\"id\":%d,\"ok\":true,\"sequence\":%llu,\"synthetic\":%u,"
+             "\"focused\":%u,\"active\":[%u,%u],\"stick\":[[%.6f,%.6f],[%.6f,%.6f]],"
+             "\"p1_source\":%d}",id,(unsigned long long)s.sequence,s.synthetic,s.focused,
+             s.active[0],s.active[1],s.stick[0][0],s.stick[0][1],s.stick[1][0],s.stick[1][1],
+             mod_controller_source_present(0));
+}
+/* Debug-only synthetic action sample; axes are signed thousandths [-1000,1000].
+ * Explicitly tagged so desktop controls cannot be mistaken for device evidence. */
+static void handle_openxr_input_override(int id,const char *json) {
+    if(json_get_int(json,"clear",0)) psx_openxr_input_override(NULL);
+    else {
+        PSXModOpenXRInput s; memset(&s,0,sizeof s);s.struct_size=sizeof s;
+        int focused=json_get_int(json,"focused",1);
+        int left=json_get_int(json,"left_active",1),right=json_get_int(json,"right_active",1);
+        if(focused<0 || focused>1 || left<0 || left>1 || right<0 || right>1) {
+            send_err(id,"focused/active must be 0 or 1");return;
+        }
+        s.focused=(uint32_t)focused;s.active[0]=(uint32_t)left;s.active[1]=(uint32_t)right;
+        int a[4]={json_get_int(json,"lx",0),json_get_int(json,"ly",0),
+                  json_get_int(json,"rx",0),json_get_int(json,"ry",0)};
+        for(int i=0;i<4;i++) {
+            if(a[i]<-1000 || a[i]>1000) { send_err(id,"axis must be -1000..1000");return; }
+            s.stick[i/2][i%2]=(float)a[i]/1000;
+        }
+        if(!psx_openxr_input_override(&s)) { send_err(id,"invalid synthetic input");return; }
+    }
+    handle_openxr_input(id,json);
+}
+
 static void handle_stereo_stats(int id, const char *json) {
     RenderStereoStats s;
     GLRenderStereoDiag g;
@@ -14281,6 +14315,8 @@ static const CmdEntry s_commands[] = {
     { "openxr_stats", handle_openxr_stats },
     { "openxr_views", handle_openxr_views },
     { "openxr_control", handle_openxr_control },
+    { "openxr_input", handle_openxr_input },
+    { "openxr_input_override", handle_openxr_input_override },
     { "stereo_stats", handle_stereo_stats },
     { "stereo_dump", handle_stereo_dump },
     { "render_pass_dump",  handle_render_pass_dump },

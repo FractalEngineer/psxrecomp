@@ -185,3 +185,47 @@ TCP index check, Debug/Release Medal of Honor builds, slot-3 paired controls and
 projection pairs; user confirmed upright output and expected head tracking.
 Game retains detailed receipts/results in docs/reverse; bulk captures ignored.
 World scale and wrist HUD are not declared physically calibrated/complete.
+
+## OpenXR locomotion actions and trusted offline controller sources (2026-10-02)
+
+Adds left/right Touch thumbstick subactions, pre-start action-set attachment,
+normal-input-boundary synchronization and neutral release on unavailable,
+unfocused, inactive or failed action state. The public PSXModOpenXRInput API is
+independent of eye replay. TCP openxr_input observes actual samples;
+openxr_input_override provides explicitly synthetic desktop controls only in
+debug-tool builds. The generated TCP index now has 330 commands.
+
+PSXModControllerState/psx_mod_set_controller_source let a trusted game plugin
+own offline axes/type and contribute buttons while retaining local menu buttons,
+coherent SIO mode requests, post-load suppression and selfcheck input recording.
+Existing TCP overrides win. Netplay/resim/eye replay do not poll sources. Decline,
+invalid data and detachment deliver neutral; session activation resets sources.
+No faithful default changes. Files: mod_plugins.h, mod_controller_source.h/.c,
+main.cpp, psx_openxr.h/.c, gpu_gl_renderer.c, debug_server.c and CMake integration.
+Game-specific axis interpretation, deadzone and gain stay outside the framework.
+
+Validation: controller source and compiled-out XR-input C tests; game mapping C
+test; existing controller lifecycle/render guards; debug-less compiled-out syntax;
+TCP index check; OpenXR-enabled Debug/Release builds. Actual slot-3 native axis
+controls and 11 synthetic action controls confirm movement/turn/release. Neutral
+stereo OFF/ON samples match all 96 fingerprint columns/cycles. Debug's 86 verified
+eye restores have zero mismatches/leaks/dropped stores. Live Quest/VDXR records
+257 adjacent action/pad snapshots, synthetic=0, both horizontal directions and
+left vertical directions; 3,131 submissions with zero XR failures or stereo
+shedding in its bounded sample. Adjacent queries are not atomic delivery proof.
+
+Outstanding: real focus-loss/reconnection controls, other game input schemes,
+controller buttons/poses/aiming, final sensitivity tuning, and independent
+headset cadence. A restricted launch reported xrGetSystem=-35; a user-session
+launch subsequently succeeded. Do not infer a controller disconnection or a
+specific IPC cause from that startup code. Game receipts record launch provenance.
+
+The initial game-side centered-byte mapping produced asymmetric turns and weak
+diagonals. Native converter tracing established its nonlinear asymmetric curve;
+that fix stays game-owned (live calibrated inverse and radial deadzone), without
+framework changes. Actual heading SW increments match +/-2,457,600 at full Quest
+turn and +/-1,290,240 at the half-range control; user confirmed corrected movement
+fully consistent. Physical angular speed and real focus-loss/reconnection remain
+unmeasured. A later visibility complaint occurred despite valid submitted pairs;
+restart restored the test, but its cause was not isolated. Do not infer visibility
+from submission counters alone.

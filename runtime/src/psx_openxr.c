@@ -7,6 +7,20 @@
 #include <math.h>
 static PSXOpenXRStats s_stats;
 static uint64_t s_pair_id,s_pair_cycle;
+static PSXModOpenXRInput s_input;
+#ifndef PSX_NO_DEBUG_TOOLS
+static int s_input_override;
+static PSXModOpenXRInput s_injected;
+int psx_openxr_input_override(const PSXModOpenXRInput *input) {
+    if (!input) { s_input_override=0; memset(&s_injected,0,sizeof s_injected); return 1; }
+    if (input->struct_size!=sizeof *input || input->focused>1 ||
+        input->active[0]>1 || input->active[1]>1) return 0;
+    for(int e=0;e<2;e++) for(int a=0;a<2;a++)
+        if(!isfinite(input->stick[e][a]) || fabsf(input->stick[e][a])>1) return 0;
+    s_injected=*input; s_input_override=1; return 1;
+}
+#endif
+void psx_openxr_input_snapshot(PSXModOpenXRInput *out) { if(out)*out=s_input; }
 void psx_openxr_pair_metadata(uint64_t id,uint64_t cycle){s_pair_id=id;s_pair_cycle=cycle;}
 #if defined(PSX_OPENXR)
 #define WIN32_LEAN_AND_MEAN
@@ -21,6 +35,9 @@ static XrInstance s_instance;
 static XrSystemId s_system;
 static XrSession s_session;
 static XrSpace s_space;
+static XrActionSet s_actions;
+static XrAction s_stick;
+static XrPath s_hand[2];
 static XrTime s_origin_reset_time;
 static XrSwapchain s_chain[2];
 static XrSwapchainImageOpenGLKHR *s_images[2];
@@ -34,6 +51,29 @@ static int check(XrResult r,const char *stage) {
     s_stats.result=r;
     if(XR_FAILED(r)) { s_stats.stage=s_stats.last_failure=stage;s_stats.last_failure_result=r;s_stats.failures++;return 0; }
     return 1;
+}
+static int input_initialize(void) {
+    XrActionSetCreateInfo set={XR_TYPE_ACTION_SET_CREATE_INFO};
+    strcpy(set.actionSetName,"locomotion"); strcpy(set.localizedActionSetName,"Locomotion");
+    if(!check(xrCreateActionSet(s_instance,&set,&s_actions),"action_set"))return 0;
+    if(!check(xrStringToPath(s_instance,"/user/hand/left",&s_hand[0]),"left_hand_path") ||
+       !check(xrStringToPath(s_instance,"/user/hand/right",&s_hand[1]),"right_hand_path"))return 0;
+    XrActionCreateInfo action={XR_TYPE_ACTION_CREATE_INFO};
+    strcpy(action.actionName,"thumbstick"); strcpy(action.localizedActionName,"Thumbstick");
+    action.actionType=XR_ACTION_TYPE_VECTOR2F_INPUT;
+    action.countSubactionPaths=2; action.subactionPaths=s_hand;
+    if(!check(xrCreateAction(s_actions,&action,&s_stick),"stick_action"))return 0;
+    XrPath profile,paths[2];
+    if(!check(xrStringToPath(s_instance,"/interaction_profiles/oculus/touch_controller",&profile),"touch_profile") ||
+       !check(xrStringToPath(s_instance,"/user/hand/left/input/thumbstick",&paths[0]),"left_stick_path") ||
+       !check(xrStringToPath(s_instance,"/user/hand/right/input/thumbstick",&paths[1]),"right_stick_path"))return 0;
+    XrActionSuggestedBinding bindings[2]={{s_stick,paths[0]},{s_stick,paths[1]}};
+    XrInteractionProfileSuggestedBinding suggest={XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggest.interactionProfile=profile; suggest.countSuggestedBindings=2; suggest.suggestedBindings=bindings;
+    if(!check(xrSuggestInteractionProfileBindings(s_instance,&suggest),"touch_bindings"))return 0;
+    XrSessionActionSetsAttachInfo attach={XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attach.countActionSets=1; attach.actionSets=&s_actions;
+    return check(xrAttachSessionActionSets(s_session,&attach),"attach_actions");
 }
 static int initialize(void) {
     uint32_t count=0;
@@ -75,6 +115,7 @@ static int initialize(void) {
     if(!binding.hDC || !binding.hGLRC){s_stats.stage="opengl_context";return 0;}
     XrSessionCreateInfo sci={XR_TYPE_SESSION_CREATE_INFO};sci.next=&binding;sci.systemId=s_system;
     if(!check(xrCreateSession(s_instance,&sci,&s_session),"session"))return 0;
+    if(!input_initialize())return 0;
     XrReferenceSpaceCreateInfo space={XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
     space.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_LOCAL;space.poseInReferenceSpace.orientation.w=1;
     if(!check(xrCreateReferenceSpace(s_session,&space,&s_space),"local_space"))return 0;
@@ -156,10 +197,15 @@ void psx_openxr_shutdown(void) {
     }
     if(s_space)xrDestroySpace(s_space);s_space=XR_NULL_HANDLE;
     if(s_session)xrDestroySession(s_session);s_session=XR_NULL_HANDLE;
+    if(s_actions)xrDestroyActionSet(s_actions);s_actions=XR_NULL_HANDLE;s_stick=XR_NULL_HANDLE;
     if(s_instance)xrDestroyInstance(s_instance);s_instance=XR_NULL_HANDLE;
     s_origin_valid=0;s_origin_reset_time=0;s_stats.initialized=s_stats.running=s_stats.tracking=s_stats.frame_open=0;
 #endif
     s_stats.enabled=0;
+    memset(&s_input,0,sizeof s_input);
+#ifndef PSX_NO_DEBUG_TOOLS
+    s_input_override=0;
+#endif
 }
 int psx_openxr_enable(int enabled) {
     psx_openxr_shutdown();memset(&s_stats,0,sizeof s_stats);
@@ -174,6 +220,41 @@ int psx_openxr_view(uint32_t eye,PSXModRenderView *out) {
     if(s_stats.frame_open && s_stats.tracking && out && eye<2){*out=s_render[eye];return 1;}
 #endif
     return 0;
+}
+int psx_openxr_input(PSXModOpenXRInput *out) {
+    if(!out || out->struct_size!=sizeof *out)return 0;
+    uint64_t seq=s_input.sequence+1;
+    memset(&s_input,0,sizeof s_input);s_input.struct_size=sizeof s_input;s_input.sequence=seq;
+#ifndef PSX_NO_DEBUG_TOOLS
+    if(s_input_override) {
+        s_input=s_injected;s_input.sequence=seq;s_input.synthetic=1;
+        for(int e=0;e<2;e++) if(!s_input.focused || !s_input.active[e])
+            s_input.stick[e][0]=s_input.stick[e][1]=0;
+        *out=s_input;return 1;
+    }
+#endif
+#if defined(PSX_OPENXR)
+    if(s_stats.enabled && s_stats.initialized && !s_stats.frame_open && events() && s_stats.running) {
+        XrActiveActionSet active={s_actions,XR_NULL_PATH};
+        XrActionsSyncInfo sync={XR_TYPE_ACTIONS_SYNC_INFO};sync.countActiveActionSets=1;sync.activeActionSets=&active;
+        XrResult r=xrSyncActions(s_session,&sync);
+        if(check(r,"sync_actions") && r==XR_SUCCESS && s_stats.state==XR_SESSION_STATE_FOCUSED) {
+            PSXModOpenXRInput current=s_input;current.focused=1;int valid=1;
+            for(int e=0;e<2;e++) {
+                XrActionStateGetInfo get={XR_TYPE_ACTION_STATE_GET_INFO};get.action=s_stick;get.subactionPath=s_hand[e];
+                XrActionStateVector2f state={XR_TYPE_ACTION_STATE_VECTOR2F};
+                if(!check(xrGetActionStateVector2f(s_session,&get,&state),"stick_state")) { valid=0; break; }
+                current.active[e]=state.isActive;
+                if(state.isActive) {
+                    current.stick[e][0]=state.currentState.x;current.stick[e][1]=state.currentState.y;
+                    for(int a=0;a<2;a++) if(!isfinite(current.stick[e][a]) || fabsf(current.stick[e][a])>1) valid=0;
+                }
+            }
+            if(valid)s_input=current;
+        }
+    }
+#endif
+    *out=s_input;return 1; /* Always a fresh neutral sample when unavailable. */
 }
 int psx_openxr_begin(int width,int height,double units) {
 #if defined(PSX_OPENXR)

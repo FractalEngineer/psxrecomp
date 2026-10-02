@@ -61,11 +61,50 @@ These are cadence samples, not motion-to-photon or headset throughput results.
 
 This first path still draws and waits from the game's draw boundary (30Hz for
 Medal of Honor). It does not provide an independent headset-rate replay pump,
-controller actions, wrist HUD, compositor depth or late head-pose reprojection.
+wrist HUD, controller poses/aiming, compositor depth or late head-pose reprojection.
 Unsubmitted images are held/reprojected by runtime policy. Native game culling
 may omit geometry revealed by wider FOV or head turns. Metric scale and per-domain
 weapon/HUD policies remain game-owned. Physical world scale is not established
 by the successful session or subjective tuning.
+
+## Opt-in locomotion input
+
+The backend creates a vector2 thumbstick action with left/right hand subactions,
+suggests the Oculus Touch interaction profile and attaches its action set before
+session start. `psx_mod_openxr_input` synchronizes actions at normal offline
+host input sampling, independently of eye rendering. Its fresh sample includes
+focus, per-hand activity, XR stick coordinates (positive Y forward/up), sequence
+and a synthetic tag. Initialization failure, session loss, unfocused sync and
+inactive actions produce neutral axes. An eye transaction refuses input polling.
+Focus handling follows the [OpenXR xrSyncActions contract](https://registry.khronos.org/OpenXR/specs/1.1/man/html/xrSyncActions.html).
+
+`psx_mod_set_controller_source(player,callback)` installs a trusted game-owned
+offline source. It supplies the complete pad axes/type and an active-low button
+word; the frontend merges local button words for menus and delivers through its
+existing coherent SIO type-request/selfcheck path. Invalid/declined samples and
+detach release axes. The existing post-load guard neutralizes the result. TCP
+input overrides retain priority. Netplay/resim and eye replay do not call it.
+Sources reset before every mod-session activation. No source is installed by
+default; game policy decides mappings, deadzone, gain and whether to use it.
+Low-latency frontend refresh can sample a second time within one VBlank.
+
+TCP `openxr_input` observes the last sample without polling or consuming it.
+`pad_status` observes current SIO delivery. Debug-only `openxr_input_override`
+injects signed-thousandth lx/ly/rx/ry, focused and left_active/right_active for
+desktop controls; `clear=1` releases it. Injected samples always say synthetic=1.
+These are separate action/pad queries, not an atomic producer/delivery record.
+
+Validation includes compiled-out input tests, source validation/release/reset
+tests, real Debug/Release game builds and game-owned mapping tests. Medal of
+Honor slot-3 synthetic movement/turn controls release correctly; neutral stereo
+on/off controls match all 96 measured guest fingerprint rows. Real Quest/VDXR
+action samples have both hands active with positive/negative axes, and a bounded
+Release sample submits 3,131 frames without XR failures or stereo shedding.
+Detailed receipts and user direction assessment live in the game docs/reverse.
+The game's first linear-byte mapper needed live native-curve compensation and
+a radial movement deadzone; after correction the user confirmed consistent
+movement. This game-specific conversion does not belong in the XR backend.
+These results do not establish headset-rate scheduling or calibrated turn speed.
 
 Sources: [OpenXR specification](https://registry.khronos.org/OpenXR/specs/1.0-khr/html/xrspec.html),
 [official SDK](https://github.com/KhronosGroup/OpenXR-SDK),

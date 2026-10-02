@@ -1774,3 +1774,13 @@ CPU layout/codegen/timing changes. Its first frame loop follows guest draw
 cadence; independent headset-rate scheduling remains future work. TCP measures
 startup, version requirement, real submissions and located/submitted metadata.
 See docs/OPENXR_RENDERING.md and UPSTREAM_PENDING.md for measured limits.
+
+### 2026-10-02: opt-in locomotion input
+
+Added Touch thumbstick actions and a trusted game-owned offline controller source
+at the existing host-input boundary. Eye replay never samples actions. Coherent
+SIO type requests, selfcheck delivery and post-load release guard remain in use;
+netplay/resim do not poll sources. No default source or guest timing/codegen
+changes. Neutral stereo controls match 96 guest fingerprint rows; synthetic axis
+and release controls and actual Quest/VDXR samples are documented in
+docs/OPENXR_RENDERING.md and UPSTREAM_PENDING.md. Headset cadence remains open.
