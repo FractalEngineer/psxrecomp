@@ -1792,3 +1792,10 @@ docs/OPENXR_RENDERING.md and UPSTREAM_PENDING.md. Headset cadence remains open.
   Debug/Release builds pass. Native game writer controls establish ammo and
   stance effects; real controller buttons/focus/reconnect remain pending. No
   faithful controller/timing defaults changed. See UPSTREAM_PENDING.md.
+
+- **2026-10-02 (Quest combat acceptance):** User confirmed all mapped combat
+  controls in Quest 3/VDXR. A separate non-synthetic sample catches right grip/R2
+  and later unfocused neutral values; it misses the other presses and trailing
+  diagnostics after bounded shutdown. Pause menu depth needs game-side work.
+  Controlled reconnect and weapon aiming remain open. Documentation only; no
+  faithful runtime changes. See UPSTREAM_PENDING.md and game combat receipt.

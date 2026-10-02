@@ -256,3 +256,14 @@ hardware focus-loss/reconnect are pending; prior live stick measurements do not
 validate the added actions. Raw game evidence stays ignored, compact receipt in
 game docs/reverse/VR_COMBAT_RECEIPT.json. First-generation headset cadence and
 native body aim are unchanged.
+
+Follow-up hardware validation: the Quest 3/VDXR user confirmed all mapped combat
+controls. A separate 246-row non-synthetic sample caught right squeeze up to 1.0
+and adjacent native R2 delivery, followed by unfocused neutral action/pad samples.
+Other presses were outside this capture; distinguish user acceptance from trace
+proof. Trailing status queries failed after the bounded process closed. Startup
+receipts have live projection submissions and zero XR failures at that snapshot;
+these are not whole-test throughput or visibility proof. The user reports the
+pause menu too close and intends to replace native grip aim with weapon aiming.
+Controlled focus-loss/reconnection, controller poses/shot aiming and independent
+cadence remain open. No framework runtime changes for this follow-up.

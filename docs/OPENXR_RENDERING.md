@@ -136,5 +136,11 @@ synthetic click/analog activity is enabled, with zero values; clear=1 releases.
 Overrides remain labelled synthetic=1 and validation is performed before change.
 
 Desktop tests exercise independent activity, invalid values, focus/clear/shutdown
-release and actual game-owned native ammo/stance writers. Real Touch button
-binding acceptance, focus-loss and reconnection remain pending device tests.
+release and actual game-owned native ammo/stance writers. The Quest 3/VDXR user
+subsequently confirmed all mapped combat controls. A separate 246-row actual
+input sample (synthetic=0) caught right squeeze reaching 1.0 with adjacent native
+R2 delivery, then unfocused neutral samples. It did not catch the other presses;
+their hardware acceptance is user feedback, not trace proof. Its trailing status
+queries failed after the bounded game closed. The pause menu is visible but too
+close; game aiming still follows the native body, without controller poses.
+Controlled hardware focus-loss/reconnection and headset cadence remain open.
