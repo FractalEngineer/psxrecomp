@@ -229,12 +229,3 @@ and normal-return verification checks their balance. This context stays local
 to the committed session and is never part of a guest savestate.
 `render_pass_stats.last_abort_detail` names skipped host exits and remains
 latched across successful passes until session reset.
-
-### Nested mod callback rollback
-
-The host checkpoint includes function-entry depth and current plugin owner.
-A pass can interrupt an outer callback; watchdog rollback restores its exact
-saved context rather than resetting depth to zero. Normal-return verification
-also checks balance. This host context is never serialized in guest savestates.
-TCP render_pass_stats.last_abort_detail names skipped exits and remains latched
-across successes until session reset.

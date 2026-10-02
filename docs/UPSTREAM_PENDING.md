@@ -326,24 +326,3 @@ one nesting repair and 52 restore checks with zero mismatches. A subsequent
 slot-5 load advanced generation 1 -> 2 with pending=0 and last_ok=1; later
 pairs recovered. Raw evidence is ignored in game analysis/vr-proof/
 weapon-wrapper-fixed; compact game receipt will retain these results.
-
-## Nested mod callback rollback (2026-10-03)
-
-Watchdog longjmp inside nested function filters skipped callback depth/owner
-cleanup. Guest restore and later stereo pairs succeeded, but elevated callback
-depth prevented subsequent savestate safe boundaries. RenderPassNesting now
-checkpoints/restores the exact interrupted depth and plugin owner, including
-a nonzero outer callback. Context is host-only and never serialized in saves.
-Normal-return verification detects imbalance. TCP render_pass_stats latches
-last_abort_detail across successes until session reset; command count is 332.
-No new printf instrumentation or faithful guest timing/input defaults change.
-
-Files: runtime/include/{mod_runtime,render_pass}.h;
-runtime/src/{mod_runtime.cpp,render_pass.c,debug_server.c}; abort/sandbox tests.
-Strict GCC tests cover five nested callbacks, changed owners, outer context,
-right-eye failure retaining the old pair, recovery and mod-only imbalance.
-Render guards, TCP index and SDK Release build pass. Live MoH slot-5 wrapped
-right-eye watchdog reported mod entries +2, one repair and 52 restore checks
-with zero mismatches. Subsequent slot-5 load advanced generation 1 -> 2 with
-pending=0/last_ok=1, and later pairs recovered. Raw evidence stays ignored in
-game analysis/vr-proof/weapon-wrapper-fixed; compact receipt in game docs.
