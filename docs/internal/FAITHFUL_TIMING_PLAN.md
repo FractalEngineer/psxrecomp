@@ -221,7 +221,12 @@ on a fixed region -> next.
   on rollback. GTE tests show depth-dependent displacement (12px/3px at
   Z=800/3200 with H=400 and X=24). TCP pair diagnostics/dumps and opt-in SBS
   presentation added. Guest timing remains frozen during callbacks. Live game
-  build and paired-image validation are pending; see UPSTREAM_PENDING.md.
+  build and paired-image validation passed: slot-3 zero-offset eyes match;
+  wall/near-ground correspondence is 5/13px at +/-24, and all measured 96-frame
+  fingerprints/cycles match the no-redraw control, including held/recovered
+  right-eye watchdog runs. The failed pair retains the old complete pair.
+  Composed SBS readback is measured with interpolation off. Debug pair cost
+  sheds work; no headset throughput claim. See UPSTREAM_PENDING.md.
 
 - **2026-10-02 (VR enhancement observability):** Added failure-site pass-call
   counters and latched begin/checkpoint refusal inputs to TCP `render_pass_stats`.

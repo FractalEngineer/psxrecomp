@@ -598,7 +598,7 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
         gl_renderer_pass_begin_diag(&s_attempt.gl);
         s_stats.checkpoint_refused++;
         /* Capture the rejection status before rolling the GL transaction back. */
-        status = pass_status();
+        status = transaction_status(eye >= 0);
         transaction_end(eye, 0, 0);
         return pass_refuse(s_checkpoint_failure, status);
     }

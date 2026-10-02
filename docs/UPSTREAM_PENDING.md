@@ -5,7 +5,10 @@ Reference upstream base: `3505f2a0` (`master`). The Medal of Honor project pins
 this branch through its framework submodule. This file inventories pending work;
 it does not assert upstream acceptance or stereo completion.
 
-## Paired stereo enhancement (implementation pending live validation)
+## Paired stereo enhancement
+
+Implementation commit: `0a955971`. Live evidence is in the game repository's
+`vr/proof/stereo-pairs/`, recorded with the game plugin changes accompanying it.
 
 The new paired API shares the existing frozen-time transaction and restore
 internals, but has explicit eye IDs and no interpolation or phase-plan gate.
@@ -26,12 +29,36 @@ Files: `runtime/include/{mod_plugins,render_pass,gpu_gl_renderer,gte_view}.h`,
 `runtime/src/{render_pass,gpu_gl_renderer,debug_server}.c`, `runtime/src/gte.cpp`,
 render-pass and GTE tests, `docs/STEREO_RENDERING.md`, generated command index.
 
-Validation so far: sandbox, nested watchdog and source guard tests passed.
+Validation: sandbox, nested watchdog and source guard tests passed.
 The right-eye nested watchdog test retains the previous pair, restores CPU/RAM/
 host nesting/view ambient and permits the next pair. GTE tests measure 12px
 versus 3px at depths 800 and 3200, match explicit pre-divide translation, and
-verify unchanged TR and repeatability. Full game build/live stereo measurements
-are the next step; this entry does not claim a working headset or calibrated IPD.
+verify unchanged TR and repeatability. OpenGL game Debug and Release builds pass.
+Live slot-3 captures with two enemies give identical decoded eyes at zero
+separation. At +/-24, inspected wall/near-ground ROIs correspond at 5/13px,
+with equal entry cycles/hashes and zero restore mismatches/leaks/dropped stores.
+The first 96 post-load fingerprint columns/cycles match the no-redraw control
+for zero, offset, held-watchdog and recovery runs. A right-eye watchdog inside
+real guest dispatch retains published pair 1 with staging mask zero; later
+pairs recover and the failed-eye/retained-pair record remains latched. Composed
+SBS readback succeeds with interpolation disabled and no temporal plans.
+
+Debug pair samples around 35ms exceed the conservative two-VBlank budget and
+shed whole pairs. This is bounded correctness evidence, not a headset throughput
+claim. OpenXR/head poses, scale/IPD and HUD comfort remain game/backend work.
+Native-wide, alternate display modes and other games have not been validated.
+
+Release with TCP tools enabled and VERIFY off was measured separately at actual
+internal scale 5 (2560x1200 eye textures): warm receipt 1,719 pairs, no shedding
+or failures, last pair 12.013ms / EMA 11.584ms. Its 96-frame fingerprints match
+a separate Release OFF control at identical settings. Cross-build fingerprints
+differ and are retained, rather than treated as an eye-redraw comparison.
+No state-hash verification or headset frame-time-tail claim is made for this
+cost sample. The original Release config without TCP tools yielded no measurement.
+
+Follow-up also corrects checkpoint-refusal status sampling to use the selected
+stereo/temporal gate; stereo failure diagnostics must not report an interpolation
+requirement. Sandbox/abort tests pass after that diagnostic correction.
 
 ## Render-pass refusal diagnostics
 
