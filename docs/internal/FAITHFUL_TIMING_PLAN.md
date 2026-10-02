@@ -1808,3 +1808,12 @@ docs/OPENXR_RENDERING.md and UPSTREAM_PENDING.md. Headset cadence remains open.
   Release build and live desktop pose/PC-filter controls pass. No faithful
   defaults or guest timing changes. Actual Quest pose/weapon alignment remains
   open. Framework PR inventory updated in UPSTREAM_PENDING.md.
+
+- **2026-10-03 (render rollback mod context):** Saved function-entry depth/plugin
+  owner across nested watchdog longjmp, preserving the interrupted callback.
+  Existing guest restore was clean, but omitted host depth blocked save loads.
+  Strict abort/sandbox tests, render guards, TCP index and SDK Release pass.
+  Live wrapped weapon fault: mod entries +2, one repair, 52 restore checks with
+  zero mismatches; slot-5 reload generation 1 -> 2 and later pair recovery.
+  TCP latched abort detail added; no faithful timing/input default changes.
+  See UPSTREAM_PENDING.md.

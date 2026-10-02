@@ -28,6 +28,7 @@
 #include "gpu.h"
 #include "gpu_gl_renderer.h"
 #include "mod_plugins.h"
+#include "mod_runtime.h"
 #include "overlay_loader.h"
 #include "psx_icache.h"
 #include "timers.h"
@@ -111,6 +112,7 @@ typedef struct RenderPassNesting {
     uint32_t ov_inprogress;
     void   (*ov_flush)(void);
     PSXModRenderView render_pose;
+    ModFunctionEntryContext mod_entry;
 } RenderPassNesting;
 
 static void nesting_save(RenderPassNesting *n) {
@@ -129,6 +131,7 @@ static void nesting_save(RenderPassNesting *n) {
     overlay_loader_native_nesting(&n->ov_active_depth, &n->ov_inprogress);
     n->ov_flush = g_overlay_flush_pending_cycles;
     gte_render_pose_get(&n->render_pose);
+    mod_runtime_function_entry_context_save(&n->mod_entry);
 }
 
 static void nesting_restore(const RenderPassNesting *n) {
@@ -147,6 +150,7 @@ static void nesting_restore(const RenderPassNesting *n) {
     overlay_loader_set_native_nesting(n->ov_active_depth, n->ov_inprogress);
     g_overlay_flush_pending_cycles = n->ov_flush;
     gte_render_pose_set(&n->render_pose);
+    mod_runtime_function_entry_context_restore(&n->mod_entry);
 }
 
 /* PSX_RENDER_PASS_VERIFY: a pass that returned normally must leave the
@@ -163,7 +167,9 @@ static int nesting_balanced(const RenderPassNesting *n) {
            now.exec_phase == n->exec_phase &&
            now.precise_mode == n->precise_mode &&
            now.ov_active_depth == n->ov_active_depth &&
-           now.ov_flush == n->ov_flush;
+           now.ov_flush == n->ov_flush &&
+           now.mod_entry.depth == n->mod_entry.depth &&
+           now.mod_entry.plugin == n->mod_entry.plugin;
 }
 
 /* After a watchdog abort, before the restore: which exits the longjmp
@@ -198,6 +204,9 @@ static int nesting_describe(const RenderPassNesting *n, int bb_defer_ck,
     RP_NOTE(now.exec_phase != n->exec_phase, "exec phase %d->%d",
             now.exec_phase, n->exec_phase);
     RP_NOTE(now.ld_delay.armed != n->ld_delay.armed, "pending load");
+    RP_NOTE(now.mod_entry.depth != n->mod_entry.depth, "mod entries %+d",
+            (int)now.mod_entry.depth - (int)n->mod_entry.depth);
+    RP_NOTE(now.mod_entry.plugin != n->mod_entry.plugin, "mod owner");
 #undef RP_NOTE
     return count;
 }
@@ -648,6 +657,8 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
         if (nesting_describe(&s_ck.nest, s_freeze.bb_defer, s_abort_detail,
                              sizeof s_abort_detail))
             s_stats.nesting_repairs++;
+        snprintf(s_stats.last_abort_detail, sizeof s_stats.last_abort_detail,
+                 "%s", s_abort_detail);
         ok = 0;
     }
     s_stats.guest_cycles_last = psx_cycle_count - cycles_before;
