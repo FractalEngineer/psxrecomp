@@ -61,7 +61,8 @@ These are cadence samples, not motion-to-photon or headset throughput results.
 
 This first path still draws and waits from the game's draw boundary (30Hz for
 Medal of Honor). It does not provide an independent headset-rate replay pump,
-wrist HUD, controller poses/aiming, compositor depth or late head-pose reprojection.
+wrist HUD, compositor depth or late head-pose reprojection. Controller pose
+snapshots are implemented; the game owns aiming policy, as described below.
 Unsubmitted images are held/reprojected by runtime policy. Native game culling
 may omit geometry revealed by wider FOV or head turns. Metric scale and per-domain
 weapon/HUD policies remain game-owned. Physical world scale is not established
@@ -204,7 +205,8 @@ debug-less syntax, render guards and TCP index pass. SDK Debug/Release builds.
 Desktop MoH pause images are identical between eyes and restore checks pass.
 A live Quest 3/VDXR run submitted the requested 2 x 1.5 meter quad at 2 meters,
 then returned to projection on resume (quad counter 89 at first inspection).
-Headset comfort and rifle appearance are separate user acceptance questions.
+The Quest user confirmed that both rifle appearance and menu comfort are fixed.
+That acceptance does not establish shot/barrel alignment or other UI screens.
 Sandboxed startup falsely appeared to be device unavailability: xrGetSystem
 returned -35, with no sessions or submissions. The same launch outside the
 tool sandbox succeeded; do not attribute those failed starts to user readiness.

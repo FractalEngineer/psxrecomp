@@ -364,7 +364,8 @@ restored the original 280 faces, repaired nesting, passed 932 restore checks,
 and allowed a generation-2 slot reload. These are game transaction controls,
 not a live failed-quad test. Quest 3/VDXR submitted 89 quads at distance 2m,
 width 2m, height 1.5m and resumed projection at the first inspection; user
-comfort is still pending. Full game receipts remain under game docs/reverse.
+confirmed rifle appearance and menu comfort. Native shot alignment remains
+unvalidated. Full game receipts remain under game docs/reverse.
 
 Startup correction: sandboxed runs returned system -35 with zero submissions,
 whereas the otherwise identical external launch succeeded. Do not report that

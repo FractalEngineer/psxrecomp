@@ -1832,6 +1832,6 @@ docs/OPENXR_RENDERING.md and UPSTREAM_PENDING.md. Headset cadence remains open.
   default-render changes. TCP exposes actual layer/dimensions. Strict off-XR
   tests, debug-less syntax, guards/index and SDK Debug/Release pass. Desktop
   pause eyes identical; Quest/VDXR submitted a 2m-distant 2 x 1.5m surface and
-  resumed projection. Comfort remains pending. Sandboxed system -35 startup
+  resumed projection. User accepted rifle appearance/menu comfort. System -35
   was resolved by external launch, not a headset readiness change. See
   UPSTREAM_PENDING.md for PR inventory and measured limits.
