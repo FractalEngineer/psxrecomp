@@ -425,3 +425,15 @@ SCPH1001 backend has not been regenerated: its input image is unavailable here,
 and its older stamp remains stale. Do not claim both BIOS stamps pass or silently
 refresh the retail stamp. The bundled overlay toolchain retains the profiles and
 emitter for users supplying their own supported retail BIOS.
+
+## Windows release executable selection (2026-10-03)
+
+Shared tools/package_game_release.sh now prefers the literal .exe candidate
+before the unsuffixed POSIX candidate, including OUTPUT_NAME marker fallback.
+Git Bash reports -f true for an unsuffixed alias of a Windows executable; selecting
+that alias stripped .exe from EXE_BASENAME and skipped DLL bundling/signing.
+
+Actual alpha verification reproduced the alias and a stripped-PATH startup
+failure 0xC0000135 with missing zlib1__.dll. Packaging with the corrected candidate
+order identifies the PE and stages the imported DLL; the normal signing gate also
+runs. This is a generic packaging fix, independent of VR runtime behavior.

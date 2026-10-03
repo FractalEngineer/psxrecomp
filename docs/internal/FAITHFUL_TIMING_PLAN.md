@@ -1859,3 +1859,10 @@ docs/OPENXR_RENDERING.md and UPSTREAM_PENDING.md. Headset cadence remains open.
   refreshed after the FOV config-parser addition. No faithful timing or runtime
   implementation changes. The game release selects OpenBIOS only; the retail
   backend's older stamp is still stale and its image is unavailable for regen.
+
+- **2026-10-03 (Windows package dependency gate):** Extracted alpha failed
+  startup with 0xC0000135 after removing developer tools from PATH. Git Bash
+  accepts an unsuffixed alias of .exe; the shared packager selected it and skipped
+  DLL/signing gates keyed on the extension. Prefer literal .exe candidates;
+  corrected real packaging stages the imported zlib1__.dll and invokes signing.
+  No faithful timing or runtime behavior changed; upstream inventory updated.
