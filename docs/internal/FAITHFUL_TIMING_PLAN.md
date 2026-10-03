@@ -1852,3 +1852,10 @@ docs/OPENXR_RENDERING.md and UPSTREAM_PENDING.md. Headset cadence remains open.
   pushing the accepted native XR startup and pacing work. Framework checkpoint
   precedes the game pin update and required regeneration. Rejected bicubic
   code remains removed; no new guest timing or rendering changes.
+
+- **2026-10-03 (native alpha release preparation):** User authorized the 0.1.0
+  alpha release. Rebuilt both emitters and regenerated OpenBIOS: all committed
+  generated C/dispatch output is unchanged, with only its source fingerprint
+  refreshed after the FOV config-parser addition. No faithful timing or runtime
+  implementation changes. The game release selects OpenBIOS only; the retail
+  backend's older stamp is still stale and its image is unavailable for regen.

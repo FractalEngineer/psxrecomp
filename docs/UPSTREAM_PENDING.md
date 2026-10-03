@@ -1,6 +1,6 @@
 # Framework changes pending upstream review
 
-Updated: 2026-10-02. Development branch: `vr-dev`; push remote: `fork`.
+Updated: 2026-10-03. Development branch: `vr-dev`; push remote: `fork`.
 Reference upstream base: `3505f2a0` (`master`). The Medal of Honor project pins
 this branch through its framework submodule. This file inventories pending work;
 it does not assert upstream acceptance or stereo completion.
@@ -411,3 +411,17 @@ briefing. Adjacent TCP timing is not compositor or audio-underrun telemetry.
 An optional native-texel bicubic trial passed source-owned GL controls at 1x/4x
 and measured 58.462 guest Hz, but user preferred the earlier presentation;
 filter implementation was removed and original presentation restored.
+
+## OpenBIOS generation stamp for the native alpha (2026-10-03)
+
+The FOV configuration parser changed an input covered by the BIOS emitter
+fingerprint. Rebuilt both emitters from the current source, regenerated OpenBIOS
+from the pinned redistributable image, and compared against the committed output:
+every generated C/dispatch file is unchanged; only OpenBIOS.emitter.sha changes.
+No BIOS instructions, runtime implementation or faithful defaults changed.
+
+The game release links OpenBIOS only, matching the distributed image. The retail
+SCPH1001 backend has not been regenerated: its input image is unavailable here,
+and its older stamp remains stale. Do not claim both BIOS stamps pass or silently
+refresh the retail stamp. The bundled overlay toolchain retains the profiles and
+emitter for users supplying their own supported retail BIOS.
