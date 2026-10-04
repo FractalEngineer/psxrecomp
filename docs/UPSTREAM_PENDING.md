@@ -1,5 +1,12 @@
 # Framework changes pending upstream review
 
+2026-10-05 accepted color correction: sRGB-preferred OpenXR swapchain, decoded
+linear fallback, single desktop-gamma application and scoped GL state
+restoration for gameplay/native copies. Source-owned real-GL ramp tests pass;
+Quest 3/VDXR brightness was accepted by the user. This release-based correction
+excludes develop's world trace, frozen-view control and visibility experiments.
+See OPENXR_RENDERING.md for the contract and validation scope.
+
 Updated: 2026-10-03. Development branch: `vr-dev`; push remote: `fork`.
 Reference upstream base: `3505f2a0` (`master`). The Medal of Honor project pins
 this branch through its framework submodule. This file inventories pending work;

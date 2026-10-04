@@ -242,3 +242,26 @@ MDEC control intervals improved from 49.547 to 59.195 guest Hz; user confirmed
 sound/framerate fixed. Videos retain existing presentation: a bicubic trial was
 rejected by user preference. Decoder/compression quality has not been compared
 to an independent oracle here; no assertion of decoder fidelity is made.
+
+## Submission color encoding (2026-10-05)
+
+PSX/stereo capture textures already contain display-encoded RGB. Submitting
+those bytes unconverted in a GL_RGBA8 swapchain made the headset interpret them
+as linear, lifting dark tones. Prefer GL_SRGB8_ALPHA8 with hardware framebuffer
+sRGB encoding disabled during copying, then restore the incoming GL state.
+If only GL_RGBA8 is supported, explicitly decode sRGB before submission.
+See the [OpenXR swapchain color contract](https://registry.khronos.org/OpenXR/specs/1.0/man/html/XrSwapchain.html).
+
+Gameplay applies desktop post-gamma once before encoding/decoding. Native
+GL_BACK already contains desktop gamma, so its copy must not apply it again.
+The change affects host XR submission only. `openxr_stats.swapchain_format`
+reports the selected format: 35907 sRGB, 32856 linear, zero before selection.
+Linear-only native copying uses an intermediate texture and 8-bit linear
+storage may lose dark-tone precision relative to the preferred sRGB path.
+
+The real-GL fixture `runtime/tests/run_openxr_color_gl.py` exercises the actual
+private gameplay/native callbacks with source-owned ramps across eight
+format/gamma/incoming-sRGB-state combinations, checking orientation, alpha,
+channel values and GL state restoration. The user accepted the brightness
+correction on Quest 3/Virtual Desktop XR on 2026-10-05. Other runtimes and
+separate native-menu perceptual acceptance remain unverified.

@@ -1866,3 +1866,11 @@ docs/OPENXR_RENDERING.md and UPSTREAM_PENDING.md. Headset cadence remains open.
   DLL/signing gates keyed on the extension. Prefer literal .exe candidates;
   corrected real packaging stages the imported zlib1__.dll and invokes signing.
   No faithful timing or runtime behavior changed; upstream inventory updated.
+
+
+- **2026-10-05 (accepted headset color correction):** Extracted only the XR
+  color repair onto release pin 9976567e for the user-requested game master PR.
+  Prefer sRGB swapchains, decode linear-only fallback, apply desktop gamma once
+  and restore host GL state. Real-GL ramps pass independently of develop world
+  tracing; the user accepted Quest 3/VDXR brightness. No faithful guest timing
+  changes or world experiments in this release correction.
