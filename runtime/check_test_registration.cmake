@@ -45,6 +45,7 @@ set(_PSXRECOMP_TESTREG_DIR "${CMAKE_CURRENT_LIST_DIR}")
 # extra steps, which is the thing this file exists to prevent.
 set(PSXRECOMP_TESTS_NOT_REGISTERED
     "test_overlay_posix.c|built and run by tests/run_overlay_posix_test.sh, which stages the dlopen fixture tree; that script is registered as overlay_posix_test on UNIX"
+    "test_openxr_color_gl.c|built and run by tests/run_openxr_color_gl.py, which extracts the renderer's copy functions into a fixture header and links this file against SDL3 and the platform GL"
 )
 
 function(psxrecomp_check_all_tests_registered)
