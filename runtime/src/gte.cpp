@@ -548,6 +548,22 @@ static inline int gte_syy(int32_t p){ int v=(p>>16)&0xFFFF; return v>=0x8000? v-
 static int32_t gte_h_scaled(const GTEState* gte);
 static int32_t s_render_view[3];
 static PSXModRenderView s_render_pose;
+
+/* Near plane, in SZ units, for the eye-projection vertex pin in gte_rtps_internal
+ * (accumulator threshold is this shifted left 12). PSX_VR_NEAR_PIN overrides it
+ * and 0 disables the pin entirely; it applies only while an eye projection render
+ * pose is active, so native and flat play are unaffected either way. */
+static int32_t s_near_pin_sz  = 64;
+static bool    s_near_pin_read = false;
+static inline int32_t gte_near_pin_sz(void) {
+    if (!s_near_pin_read) {
+        s_near_pin_read = true;
+        const char* e = getenv("PSX_VR_NEAR_PIN");
+        if (e) s_near_pin_sz = atoi(e);
+        if (s_near_pin_sz < 0) s_near_pin_sz = 0;
+    }
+    return s_near_pin_sz;
+}
 static bool s_render_rotate;
 extern "C" void gte_render_pose_get(PSXModRenderView *view) { *view = s_render_pose; }
 extern "C" void gte_render_pose_set(const PSXModRenderView *view) {
@@ -883,6 +899,20 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
         mac1 = result[0]; mac2 = result[1]; mac3 = result[2];
     }
 
+    /* VR eye projection only. A vertex behind the eye projects out of range and
+     * the game then discards the whole polygon that holds it, which removes the
+     * floor tile the player stands on or the wall panel they stand against --
+     * the hole tracks the head because only the eye view puts those vertices
+     * behind the plane. Pin such a vertex onto the near plane instead: the
+     * polygon survives and its front vertices carry the shape.
+     * Native and flat play never set a projection render pose, so their
+     * projection output is unchanged. See docs/reverse/VR_NEAR_CLIP_PLAN.md. */
+    bool near_pinned = false;
+    if (s_render_pose.projection) {
+        const int64_t pin = (int64_t)gte_near_pin_sz() << 12;
+        if (pin > 0 && mac3 < pin) { mac3 = pin; near_pinned = true; }
+    }
+
     // MAC1..3 overflow flags observe the unshifted 44-bit accumulator.
     gte->check_mac_overflow(mac1, 1);
     gte->check_mac_overflow(mac2, 2);
@@ -965,6 +995,19 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
             sy16 = (int64_t)gte->OFY + s_render_pose.cy_delta_q16 +
                    ((int64_t)gte->IR2 * s_render_pose.fy_q16 / gte->SZ[3]) * h / ref;
         }
+    }
+    /* A pinned vertex sits on the near plane along its own view ray, so it can
+     * project far outside the viewport and spear the polygon across the view as
+     * a surface passes the eye -- foliage sticking to the camera. Hold such a
+     * vertex within one viewport of the screen instead: the polygon still covers
+     * the near field, but it cannot stretch further than that. */
+    if (near_pinned) {
+        const int64_t kx0 = -((int64_t)512 << 16), kx1 = (int64_t)1024 << 16;
+        const int64_t ky0 = -((int64_t)240 << 16), ky1 = (int64_t)480 << 16;
+        if (sx16 < kx0) sx16 = kx0;
+        if (sx16 > kx1) sx16 = kx1;
+        if (sy16 < ky0) sy16 = ky0;
+        if (sy16 > ky1) sy16 = ky1;
     }
     /* RTPS/RTPT reuse MAC0's overflow flags for each projected X/Y
      * accumulator before MAC0 is replaced by the depth-cue result. */
