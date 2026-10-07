@@ -53,8 +53,9 @@ HD replacements and dumping run on the render thread when it is enabled:
 residency changes travel with the recorded commands, and native VRAM (CPU
 raster under HD authority) is published to the guest at every sync point.
 A GP0(A0) upload holds the context from its header to its commit, so its mask
-checks and partial readbacks see every earlier draw. Smooth motion does not
-generate frames while either is active. Dynamic resolution is available.
+checks and partial readbacks see every earlier draw. Smooth motion generates
+frames with HD replacements too: in-between draws resolve the same
+replacements and never write native VRAM. Dynamic resolution is available.
 
 Capture defaults follow the referenced DuckStation policy: track uploads,
 union their used rectangles per palette, skip direct-color C16 textures, ignore

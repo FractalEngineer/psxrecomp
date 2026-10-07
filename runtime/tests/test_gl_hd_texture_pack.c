@@ -1,5 +1,8 @@
 /* Real GL + real format/decoder + renderer facade. Source-owned fixtures. */
 #define PSX_TEST_HD_TEXTURE_PACK 1
+/* Every presented image (real or generated) passes here before its swap. */
+static void fg_fixture_present(int generated);
+#define GL_PRESENT_TEST_HOOK(gen) fg_fixture_present(gen)
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
 #define STBI_ONLY_JPEG
@@ -141,6 +144,41 @@ static void native_scene(void) {
     gr_set_mask_bits(0,0);
     gr_fill_rect(1022,510,4,4,0x1234);
 }
+/* Smooth motion with an HD pack: presented images, read back before swap. */
+static int fg_rec = 0;
+static uint64_t fg_real_seq, fg_n_real, fg_n_gen, fg_last_real;
+static int fg_gen_hud_hd, fg_gen_hud_bad, fg_real_hud_hd;
+static uint64_t fg_fnv(const void* p, size_t n, uint64_t h) {
+    const uint8_t* b = (const uint8_t*)p;
+    for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 0x100000001b3ull; }
+    return h;
+}
+static void fg_fixture_present(int generated) {
+    if (!fg_rec) return;
+    int ww = 0, wh = 0;
+    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    uint8_t* px = (uint8_t*)malloc((size_t)ww * wh * 4);
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glReadPixels(0, 0, ww, wh, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    /* Only the HUD can be red: its replacement (native texels are green/black). */
+    int red = 0, green = 0;
+    for (size_t i = 0; i < (size_t)ww * wh; ++i) {
+        const uint8_t* q = px + i * 4;
+        if (q[0] > 200 && q[1] < 40 && q[2] < 40) red++;
+        if (q[1] > 200 && q[0] < 40 && q[2] < 40) green++;
+    }
+    (void)green;
+    const int hd = red > 0;   /* the native texels hold no red */
+    if (generated) { fg_n_gen++; if (hd) fg_gen_hud_hd++; else fg_gen_hud_bad++; }
+    else {
+        uint64_t d = fg_fnv(px, (size_t)ww * wh * 4, 0xcbf29ce484222325ull);
+        if (d != fg_last_real) { fg_last_real = d; fg_real_seq = fg_fnv(&d, sizeof d, fg_real_seq); fg_n_real++; }
+        if (hd) fg_real_hud_hd++;
+    }
+    free(px);
+}
+
 static void wait_ready(int st) {
     const int bounds[4]={0,0,3,3};
     int ready=0;
@@ -462,7 +500,7 @@ int main(int argc,char** argv) {
     check(gpu_hd_textures_configure(beetle_root,1,0,error,sizeof(error)),"HD opens while render thread is running");
     check(vram[96*1024+96]==0x1234,"HD activation retains the queued native draw");
     char fg_diag[4096]; gl_renderer_frame_gen_json(fg_diag,sizeof(fg_diag));
-    check(strstr(fg_diag,"\"active\":0")!=NULL,"Smooth motion is inactive under HD authority");
+    check(strstr(fg_diag,"\"active\":1")!=NULL,"Smooth motion stays active under HD authority");
     gl_renderer_render_thread_frame_boundary();
     check(!rt_held(),"HD replacement mode runs on the render thread");
     state(); gr_fill_rect(128,96,4,1,0x2345);
@@ -518,6 +556,64 @@ int main(int argc,char** argv) {
     gl_renderer_render_thread_stop();
     check(!gl_renderer_render_thread_active(),"thread stops safely after HD transitions");
     check(vram[96*1024+224]==0x5678,"stopping the thread preserves final HD native draws");
+    /* Smooth motion with an HD pack: the same 30 Hz game (each frame shown
+     * twice) with generation off, then forced on. Real frames and native VRAM
+     * must be identical, and generated frames show the HD HUD. */
+    {
+        uint64_t seq[3]={0,0,0}, nreal[3]={0,0,0}, vd=0;
+        static uint16_t vsnap[1024*512];
+        state(); gr_vram_transfer_in(512,0,4,4,source_words); wait_ready(0);   /* decode before the thread owns residency */
+        check(gl_renderer_render_thread_start(2)==1,"render thread started for Smooth motion + HD");
+        /* run 0 warms every surface the scene touches (both buffers), so
+         * runs 1 (off) and 2 (on) start from the same renderer state. */
+        for(int run=0;run<3;++run) {
+            gl_renderer_render_thread_frame_boundary();
+            state(); gr_vram_transfer_in(512,0,4,4,source_words);
+            if(run==2) setenv("PSX_FRAME_GEN_FORCE","1",1);
+            gl_renderer_set_frame_generation(run==2);
+            gl_renderer_frame_gen_configure(120.0,59.94);
+            fg_real_seq=0xcbf29ce484222325ull; fg_n_real=fg_n_gen=fg_last_real=0;
+            fg_gen_hud_hd=fg_gen_hud_bad=fg_real_hud_hd=0;
+            fg_rec=1;
+            for(int g=0;g<16;++g) {
+                const int bx=(g&1)?256:0;
+                state(); gr_set_draw_area(bx,0,bx+63,63);
+                gr_fill_rect(bx,0,64,64,0x1084);
+                gr_draw_flat_rect(bx+20+g,30,8,8,0x7fff);
+                /* GTE-projected scenery panning with the camera (projection
+                 * sources, as gpu.c records them): reprojection's input. */
+                for(int i=0;i<12;++i) {
+                    const int x=bx+2+(i%4)*15+g%4, y=14+(i/4)*16;
+                    uint32_t id[3]; int32_t pc[9], hh[3], xs[3]={x,x+10,x}, ys[3]={y,y,y+10};
+                    for(int k=0;k<3;++k){ id[k]=(uint32_t)(i*3+k+1); pc[3*k]=xs[k]-bx; pc[3*k+1]=ys[k]; pc[3*k+2]=1000; hh[k]=1000; }
+                    gl_renderer_fg_source(id,pc,hh,xs,ys);
+                    gr_draw_flat_triangle(xs[0],ys[0],xs[1],ys[1],xs[2],ys[2],(uint16_t)(0x0842*(i%3+1)));
+                }
+                gr_draw_textured_rect(bx+4,4,4,4,0,0,0,0,texture_page);
+                for(int k=0;k<2;++k) {
+                    gl_renderer_present_vram(bx,0,64,64,0,0);
+                    gl_renderer_render_thread_frame_boundary();
+                }
+            }
+            gl_renderer_render_thread_sync("fg-hd");
+            fg_rec=0;
+            seq[run]=fg_real_seq; nreal[run]=fg_n_real;
+            if(run==1) memcpy(vsnap,vram,sizeof(vsnap));
+            if(run==2) vd=memcmp(vsnap,vram,sizeof(vsnap));
+            if(run==2) printf("fg-hd: real=%llu generated=%llu gen_hud_hd=%d gen_hud_bad=%d real_hud_hd=%d\n",
+                (unsigned long long)fg_n_real,(unsigned long long)fg_n_gen,fg_gen_hud_hd,fg_gen_hud_bad,fg_real_hud_hd);
+        }
+        unsetenv("PSX_FRAME_GEN_FORCE");
+        gl_renderer_set_frame_generation(0);
+        gl_renderer_render_thread_stop();
+        check(nreal[1]>=8 && seq[1]==seq[2] && nreal[1]==nreal[2],"Smooth motion + HD: real frames identical");
+        check(vd==0,"Smooth motion + HD: generated frames write no native VRAM");
+        check(fg_real_hud_hd>0,"Smooth motion + HD: real HUD is the HD replacement");
+        if(!s_hiw) {
+            check(fg_n_gen>0,"Smooth motion + HD: in-between frames generated");
+            check(fg_gen_hud_hd>0 && fg_gen_hud_bad==0,"Smooth motion + HD: generated HUD is the HD replacement");
+        }
+    }
     memcpy(reference,vram,sizeof(vram));
     gl_renderer_set_cpu_auth_dual(1);
     gpu_hd_textures_shutdown();

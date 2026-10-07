@@ -107,8 +107,9 @@ has measured time to spare.
   as the raw mirror holds it when the in-between frame is drawn.
 - Single-buffered games never flip, so nothing is generated.
 - Windowed high-resolution mode and depth24 frames are not generated.
-- HD texture replacements or texture dumping: the render thread keeps
-  running, but Smooth motion does not generate frames while either is active.
+- HD texture replacements and dumping: generated frames draw with the same
+  replacements as real frames (HUD/2D included); they are presentation only,
+  so native VRAM and dumps see only real frames.
 
 ## Debug
 

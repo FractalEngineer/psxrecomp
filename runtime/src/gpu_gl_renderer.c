@@ -5722,11 +5722,9 @@ void gl_renderer_set_hd_texture_mode(int on) {
     }
     s_hd_native_authority = on;
     s_rthm_open_upload_set = 0;
-    s_fg_broken = 1;   /* Smooth motion restarts its lists after HD */
-    if (on && s_rth_on && s_fg_on) {
-        fprintf(stdout, "psxrecomp: HD textures/dumping: Smooth motion paused until HD is off\n");
-        fflush(stdout);
-    }
+    /* Smooth motion restarts its lists: their draws resolve textures under
+     * the authority they were recorded in. */
+    s_fg_broken = 1;
     s_gpu_dirty = 0; rect_clear(&s_cpu_dirty);
     if (on) s_selected_bank_tex = 0;
 }
@@ -9926,8 +9924,7 @@ static void rth_replay_present(const RtCmd *c, const uint8_t *p) {
     static int skipped_last = 0;
     const int stale = rt_frames_ahead() >= 2 && !skipped_last;
     /* Frame generation schedules (or drops) presents itself. */
-    /* HD authority keeps Smooth motion off (its lists are not HD-aware). */
-    if (s_fg_on && !s_hd_native_authority && fg_on_present(c->op, p, c->payload, stale)) { skipped_last = 0; return; }
+    if (s_fg_on && fg_on_present(c->op, p, c->payload, stale)) { skipped_last = 0; return; }
     if (stale) {
         /* Two later frames are already recorded, so the emulation thread is
          * at (or near) the in-flight bound waiting on us. Showing this frame
@@ -11420,7 +11417,7 @@ int gl_renderer_frame_gen_json(char *out, int cap) {
         "\"place_camera\":%u,\"place_object\":%u,\"place_neighbour\":%u,"
         "\"place_unchanged\":%u,\"cam_angle_deg\":%.3f,\"cam_shift\":%.1f,"
         "\"clamped\":%u,\"guessed\":%u,\"verdict_ok\":%d,\"rejected\":%llu,\"reject_why\":\"%s\"",
-        s_fg_on, s_fg_on && s_rth_on && !s_hd_native_authority && open, s_fg_force,
+        s_fg_on, s_fg_on && s_rth_on && open, s_fg_force,
         (unsigned long long)s_fg_generated, (unsigned long long)s_fg_real_presents,
         (unsigned long long)s_fg_flips, (unsigned long long)s_fg_dups,
         (unsigned long long)s_fg_flushed, (unsigned long long)s_fg_skipped_plan,
