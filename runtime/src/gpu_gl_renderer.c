@@ -741,8 +741,9 @@ static float   s_pq[3];
 static int     s_pz_valid = 0;
 static float   s_pz[3];
 /* PGXP renderer features (docs/ENHANCEMENTS.md G1.14), all off by default:
- * depth buffer for opaque 3D polygons. */
-static int     s_pgxp_depth = 0;
+ * depth buffer for opaque 3D polygons and perspective-correct Gouraud
+ * colour. */
+static int     s_pgxp_depth = 0, s_pgxp_cpersp = 0;
 static float   s_pgxp_depth_threshold = 4096.0f;   /* SZ units, as DuckStation */
 static int     s_depth_need_clear = 1, s_depth_used = 0;
 static float   s_depth_last_avg = 0.0f;
@@ -1547,16 +1548,18 @@ static const char *GEO_VS =
     "uniform float u_xcenter;/* stretch centre in VRAM px; 0 canonical */\n"
     "uniform float u_zbias;  /* PGXP depth: relative near bias of the colour pass */\n"
     "noperspective out vec4 v_col;\n"
+    "smooth out vec3 v_col_p;   /* perspective-correct colour (PGXP, G1.14) */\n"
+    "flat out int v_cp;\n"
     "void main(){\n"
     "  /* a_col.a carries the mask bit (0/1) and, for a PGXP 3D vertex, its\n"
-    "   * GTE SZ: a = mask + 2*sz. A\n"
+    "   * GTE SZ: a = mask + 2*(sz + 65536*cp), cp = perspective colour. A\n"
     "   * negative a is a depth-clear vertex (beyond every SZ, inside the far plane). */\n"
     "  float a = a_col.a, code = floor(a * 0.5), zn = 0.0, w = 1.0;\n"
     "  float m = a - 2.0 * code;\n"
-    "  float sz = code;\n"
-    "  if (a < 0.0) { m = 0.0; zn = 0.9999; sz = 0.0; }  /* inside the far plane: never clipped */\n"
-    "  else if (sz > 0.5) { zn = 1.0 - 512.0 / (max(sz * (1.0 - u_zbias) - (u_zbias > 0.0 ? 48.0 : 0.0), 1.0) + 256.0); }\n"
-    "  v_col = vec4(a_col.rgb, m);\n"
+    "  float cp = code >= 65536.0 ? 1.0 : 0.0, sz = code - 65536.0 * cp;\n"
+    "  if (a < 0.0) { m = 0.0; zn = 0.9999; sz = 0.0; cp = 0.0; }  /* inside the far plane: never clipped */\n"
+    "  else if (sz > 0.5) { zn = 1.0 - 512.0 / (max(sz * (1.0 - u_zbias) - (u_zbias > 0.0 ? 48.0 : 0.0), 1.0) + 256.0); if (cp > 0.5) w = sz / 1024.0; }\n"
+    "  v_col = vec4(a_col.rgb, m); v_col_p = a_col.rgb; v_cp = int(cp);\n"
     "  float xb = a_pos.x;\n"
     "  if (u_xscale < 0.0) {\n"
     "    float s = -u_xscale; float h = u_xhalf / s;\n"
@@ -1566,8 +1569,8 @@ static const char *GEO_VS =
     "  gl_Position = vec4(((xb+u_shift+u_xoff)/u_xhalf - 1.0) * w, ((a_pos.y+u_shift)/256.0 - 1.0) * w, zn * w, w); }\n";
 static const char *GEO_FS =
     "#version 330\n"
-    "noperspective in vec4 v_col; out vec4 frag;\n"
-    "void main(){ frag = v_col; }\n";
+    "noperspective in vec4 v_col; smooth in vec3 v_col_p; flat in int v_cp; out vec4 frag;\n"
+    "void main(){ frag = v_cp != 0 ? vec4(v_col_p, v_col.a) : v_col; }\n";
 
 /* Textured prims: sample raw 1555 VRAM (integer), CLUT decode per depth,
  * texture window, optional bilinear, texel-0 discard, STP-split discard,
@@ -1609,7 +1612,8 @@ static const char *TEX_VS =
     "flat out int v_raw; flat out ivec4 v_limits; flat out int v_semi;\n"
     "flat out int v_twin;\n"
     "flat out vec4 v_hd_source; flat out int v_hd_mode;\n"
-    "void main(){ v_uv = a_uv; v_uv_p = a_uv; v_col = a_col;\n"
+    "smooth out vec3 v_col_p; flat out int v_cp;\n"
+    "void main(){ v_uv = a_uv; v_uv_p = a_uv; v_col = a_col; v_col_p = a_col.rgb;\n"
     "  v_persp = (a_q > 0.0) ? 1 : 0;\n"
     "  v_tpage = ivec2(a_tpage + 0.5); v_clut = ivec2(a_clut + 0.5);\n"
     "  v_depth = int(a_depth + 0.5); v_raw = int(a_raw + 0.5);\n"
@@ -1631,15 +1635,19 @@ static const char *TEX_VS =
     "   * a_q == 0 (feature off) w is exactly 1.0 and this is the old expression. */\n"
     "  float w = (a_q > 0.0) ? (1.0 / a_q) : 1.0;\n"
     "  /* PGXP (G1.14): a_col.a is 1.0 (unused) unless a PGXP 3D vertex\n"
-    "   * stores -sz there, so the vertex stays TEXV floats for every title. */\n"
-    "  float sz = a_col.a < 0.0 ? -a_col.a : 0.0, zn = 0.0;\n"
-    "  if (sz > 0.5) { zn = 1.0 - 512.0 / (max(sz * (1.0 - u_zbias) - (u_zbias > 0.0 ? 48.0 : 0.0), 1.0) + 256.0); }\n"
+    "   * stores -(sz + 65536*cp) there (cp: perspective-correct colour), so\n"
+    "   * the vertex stays TEXV floats for every title. */\n"
+    "  float pz = a_col.a < 0.0 ? -a_col.a : 0.0;\n"
+    "  float cp = pz >= 65536.0 ? 1.0 : 0.0, sz = pz - 65536.0 * cp, zn = 0.0;\n"
+    "  if (sz > 0.5) { zn = 1.0 - 512.0 / (max(sz * (1.0 - u_zbias) - (u_zbias > 0.0 ? 48.0 : 0.0), 1.0) + 256.0); if (a_q <= 0.0 && cp > 0.5) w = sz / 1024.0; }\n"
+    "  v_cp = int(cp);\n"
     "  vec2 ndc = vec2((xb+u_shift+u_xoff)/u_xhalf - 1.0, (a_pos.y+u_shift)/256.0 - 1.0);\n"
     "  gl_Position = vec4(ndc * w, zn * w, w); }\n";
 static const char *TEX_FS =
     "#version 330\n"
     "noperspective in vec2 v_uv; noperspective in vec4 v_col;\n"
     "smooth in vec2 v_uv_p; flat in int v_persp;\n"
+    "smooth in vec3 v_col_p; flat in int v_cp;\n"
     "out vec4 frag; out vec4 blend_factor;\n"
     "flat in ivec2 v_tpage;   /* texture page base, VRAM px */\n"
     "flat in ivec2 v_clut;    /* CLUT base, VRAM px */\n"
@@ -1787,7 +1795,7 @@ static const char *TEX_FS =
     "  }\n"
     "  if (u_semipass == 1 && stp == 1) discard;\n"
     "  if (u_semipass == 2 && stp == 0) discard;\n"
-    "  if (v_raw == 0) rgb = clamp(rgb * v_col.rgb * 2.0, 0.0, 1.0);\n"
+    "  if (v_raw == 0) rgb = clamp(rgb * (v_cp != 0 ? v_col_p : v_col.rgb) * 2.0, 0.0, 1.0);\n"
     "  float dst_factor = 0.0;\n"
     "  if (u_semimode == 4 && v_semi != 0 && stp != 0) {\n"
     "    dst_factor = v_semi == 1 ? 0.5 : 1.0;\n"
@@ -2928,7 +2936,7 @@ int  gl_renderer_get_wide_fast(void) { return s_wide_fast; }
  * the middle of a replayed frame; they are safe at session_reboot. */
 static int s_pgxp_render_wanted = 0;   /* any PGXP renderer feature on */
 static void pgxp_render_wanted_update(void) {
-    __atomic_store_n(&s_pgxp_render_wanted, s_pgxp_depth ? 1 : 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_pgxp_render_wanted, (s_pgxp_depth || s_pgxp_cpersp) ? 1 : 0, __ATOMIC_RELEASE);
 }
 int gl_renderer_pgxp_render_wanted(void) {
     return __atomic_load_n(&s_pgxp_render_wanted, __ATOMIC_ACQUIRE);
@@ -2941,6 +2949,12 @@ void gl_renderer_set_pgxp_depth(int on) {
     pgxp_render_wanted_update();
 }
 int  gl_renderer_get_pgxp_depth(void) { return s_pgxp_depth; }
+void gl_renderer_set_pgxp_color_perspective(int on) {
+    GL_RT_SYNC("set_pgxp_color_perspective");
+    s_pgxp_cpersp = on ? 1 : 0;
+    pgxp_render_wanted_update();
+}
+int  gl_renderer_get_pgxp_color_perspective(void) { return s_pgxp_cpersp; }
 void gl_renderer_set_pgxp_depth_threshold(float sz) {
     GL_RT_SYNC("set_pgxp_depth_threshold"); s_pgxp_depth_threshold = sz; }
 void gl_renderer_pgxp_render_stats(uint64_t *depth_tris, uint64_t *depth_clears) {
@@ -3776,7 +3790,7 @@ static void line_to_quad(const float *v, float *q) {
 /* Flat / gouraud triangles and lines share the GEO program. mode: GL_TRIANGLES
  * or GL_LINES; verts are (x, y, r, g, b, a) tuples with colors as 1555. */
 
-/* ---- PGXP depth buffer (G1.14) ------------------------------------------- -------
+/* ---- PGXP depth buffer and perspective colour (G1.14) ------------ -------
  * A triangle is "3D" here when gpu.c proved all three vertices from GTE
  * dataflow shadows: sub-pixel positions (s_pc_valid) and their SZ
  * (s_pz_valid). Everything else (2D, HUD, sprites, CPU-built or unproven
@@ -3818,10 +3832,11 @@ static int pgxp_tri_depth_mode(int semi) {
     const float zmin = fminf(s_pz[0], fminf(s_pz[1], s_pz[2]));
     return zmin >= s_pgxp_depth_near ? 1 : 0;
 }
-/* Per-vertex code the shaders decode: SZ (0 = none). */
+/* Per-vertex code the shaders decode: SZ (0 = none) plus 65536 when the
+ * vertex's Gouraud colour interpolates perspective-correct. */
 static float pgxp_vertex_code(float sz) {
     if (!s_pz_valid || sz <= 0.0f) return 0.0f;
-    return sz;
+    return sz + (s_pgxp_cpersp ? 65536.0f : 0.0f);
 }
 
 /* The depth buffer is cleared (beyond every SZ, over the drawing area and
