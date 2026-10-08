@@ -206,6 +206,13 @@ int main() {
     expect("ss parse 4", psx_ss_parse_milli("4"), 4000);
     expect("ss reject 0.5", psx_ss_parse_milli("0.5"), 0);
     expect("ss reject 5", psx_ss_parse_milli("5"), 0);
+    // Dynamic resolution floor "display": the output's lines, no supersample.
+    expect("floor display 1080 MD", psx_dynres_floor_scale(PSX_IR_DISPLAY, PSX_IR_DISPLAY, 240, 1080, 9), 5);
+    expect("floor display 1440 MD", psx_dynres_floor_scale(PSX_IR_DISPLAY, PSX_IR_DISPLAY, 240, 1440, 12), 6);
+    expect("floor display preset", psx_dynres_floor_scale(PSX_IR_DISPLAY, 1080, 240, 2160, 9), 5);
+    expect("floor display unset", psx_dynres_floor_scale(PSX_IR_DISPLAY, PSX_IR_UNSET, 240, 1080, 9), 5);
+    expect("floor display clamp", psx_dynres_floor_scale(PSX_IR_DISPLAY, PSX_IR_DISPLAY, 240, 2160, 4), 4);
+    expect("floor 720p", psx_dynres_floor_scale(720, PSX_IR_DISPLAY, 240, 1080, 9), 3);
     expect("ss reject junk", psx_ss_parse_milli("2y"), 0);
     expect("ss 1.0 is the plain resolve",
            psx_resolve_internal_scale_ss(PSX_IR_DISPLAY, 240, 1080, 32, 1000), 5);

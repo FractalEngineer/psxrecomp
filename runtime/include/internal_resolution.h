@@ -241,3 +241,17 @@ static inline PsxIrAdopted psx_ir_adopt_launcher(int has_row, int preset,
     }
     return a;
 }
+
+/* ---- Dynamic resolution floor ([video] dynamic_resolution_min) -------------
+ * A preset or line count resolves as usual. "display" (PSX_IR_DISPLAY) is the
+ * output's own lines: the selected internal resolution WITHOUT the supersample
+ * factor (Match display = the monitor's pixel height). With supersample > 1
+ * the controller then trades only supersampling and never drops below the
+ * output. Clamped to [1, ceiling]. */
+static inline int psx_dynres_floor_scale(int min_value, int selected_ir, int ref_lines,
+                                         int display_px_h, int ceiling) {
+    const int v = (min_value == PSX_IR_DISPLAY && selected_ir != PSX_IR_UNSET)
+                  ? selected_ir : min_value;
+    int s = psx_resolve_internal_scale(v, ref_lines, display_px_h, ceiling);
+    return s > ceiling ? ceiling : s;
+}

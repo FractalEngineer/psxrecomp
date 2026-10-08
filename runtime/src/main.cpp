@@ -9334,9 +9334,15 @@ static void dynres_setup(void) {
                          "dual raster)\n");
         return;
     }
-    int floor_s = psx_resolve_internal_scale(dynres_min_value(), g_video_ref_lines,
-                                             psx_sdl_display_pixel_height(nullptr),
-                                             ceiling);
+    /* Floor "display": the output's own lines, i.e. the selected internal
+     * resolution without the supersample factor (Match display = the
+     * monitor's pixel height). Dynamic resolution then only gives back
+     * supersampling and never renders below the output. */
+    int floor_s = psx_dynres_floor_scale(dynres_min_value(),
+                                         effective_internal_resolution(),
+                                         g_video_ref_lines,
+                                         psx_sdl_display_pixel_height(nullptr),
+                                         ceiling);
     if (floor_s > ceiling) floor_s = ceiling;
     DynresParams params;
     dynres_default_params(&params);
@@ -18089,9 +18095,9 @@ session_reboot:
         g_video_dynres_env = (*e && *e != '0') ? 1 : 0;
     if (const char* e = std::getenv("PSX_DYNRES_MIN")) {
         int v = 0;
-        if (psx_ir_parse(e, &v) && v != PSX_IR_DISPLAY) g_video_dynres_min_env = v;
+        if (psx_ir_parse(e, &v)) g_video_dynres_min_env = v;
         else std::fprintf(stdout, "psxrecomp: PSX_DYNRES_MIN=%s not understood "
-                          "(native, 720p, 1080p, 1440p, 4k, 5k, 8k, or lines)\n", e);
+                          "(native, 720p, 1080p, 1440p, 4k, 5k, 8k, display, or lines)\n", e);
     }
     {
         /* Per-backend ceiling. OpenGL allocates its hr surface at context init

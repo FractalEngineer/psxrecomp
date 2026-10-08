@@ -622,6 +622,21 @@ ordered-grid SSAA of everything, 2D included. Native and the legacy
 its ceiling and steps under it as before. `PSX_SUPERSAMPLE=<factor>` overrides
 it for one run.
 
+To make supersampling the elastic part only, set the dynamic resolution floor
+to the output: `dynamic_resolution_min = "display"` (also `PSX_DYNRES_MIN=display`
+and settings.toml) means the selected internal resolution *without* the
+supersample factor, i.e. the monitor's own lines under Match display or the
+preset's lines otherwise. Dynamic resolution then steps between the
+supersampled ceiling and the output and never renders below it:
+
+```toml
+[video]
+internal_resolution = "display"
+supersample = 2.0
+dynamic_resolution = true
+dynamic_resolution_min = "display"
+```
+
 `antialiasing_mode` filters the composed game image on OpenGL: after the game
 quad (4:3, native-wide, Smooth motion and generated frames alike) and before
 hold-last capture, the OSD, screenshots and the swap. It reads only output

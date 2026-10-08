@@ -715,8 +715,7 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             int value = 0;
             bool ok = false;
             if (ir.is_string()) {
-                ok = psx_ir_parse(ir.as_string().str.c_str(), &value) != 0 &&
-                     value != PSX_IR_DISPLAY;
+                ok = psx_ir_parse(ir.as_string().str.c_str(), &value) != 0;
             } else if (ir.is_integer()) {
                 const auto n = ir.as_integer();
                 ok = n >= PSX_IR_MIN_LINES && n <= PSX_IR_MAX_LINES;
@@ -725,7 +724,7 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             if (!ok) {
                 throw std::runtime_error(
                     "[video] dynamic_resolution_min must be native, 720p, 1080p, "
-                    "1440p, 4k, 5k, 8k, or a number of lines");
+                    "1440p, 4k, 5k, 8k, display, or a number of lines");
             }
             rt.video_dynamic_resolution_min = value;
         }
@@ -2801,8 +2800,7 @@ UserSettings load_user_settings(const fs::path& path) {
             const toml::value& ir = toml::find(v, "dynamic_resolution_min");
             int value = 0;
             if (ir.is_string()) {
-                if (psx_ir_parse(ir.as_string().str.c_str(), &value) &&
-                    value != PSX_IR_DISPLAY) {
+                if (psx_ir_parse(ir.as_string().str.c_str(), &value)) {
                     s.dynamic_resolution_min = value; s.has_dynamic_resolution_min = true;
                 }
             } else if (ir.is_integer()) {
@@ -3211,8 +3209,7 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     if (s.has_dynamic_resolution)
         f << "dynamic_resolution = " << (s.dynamic_resolution ? "true" : "false") << "\n";
     if (s.has_dynamic_resolution_min &&
-        psx_ir_value_valid(s.dynamic_resolution_min) &&
-        s.dynamic_resolution_min != PSX_IR_DISPLAY) {
+        psx_ir_value_valid(s.dynamic_resolution_min)) {
         const char* id = psx_ir_id_for(s.dynamic_resolution_min);
         if (id)
             f << "dynamic_resolution_min = \"" << id << "\"\n";
