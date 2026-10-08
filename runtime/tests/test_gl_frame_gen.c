@@ -183,10 +183,11 @@ static int wide_mode;
  * PGXP 3D triangle (sub-pixel positions and per-vertex GTE SZ, as gpu.c
  * sends them while a PGXP renderer feature is on), packed so neighbours
  * overlap with later triangles farther away: the depth buffer, not painter
- * order, decides the overlaps. "depth" turns the depth buffer on; "none"
- * draws the same scene without it. The generated frame at phase 1 must still
+ * order, decides the overlaps, and SZ differs per vertex. "depth" turns the
+ * depth buffer on, "color" perspective-correct Gouraud colour; "none" draws
+ * the same scene without them. The generated frame at phase 1 must still
  * equal the real one. */
-static int g_pgxp, g_pgxp_depth;
+static int g_pgxp, g_pgxp_depth, g_pgxp_color;
 /* What gpu.c records for a GTE-projected triangle (gl_renderer_fg_source):
  * vertex identities and camera-space positions that project (H = z = 1000)
  * to the triangle's screen positions relative to its buffer. */
@@ -211,8 +212,10 @@ static void fixture_sources(int i, int bx, int x, int y) {
     if (g_pgxp) {
         gr_set_precise_triangle(1, xs[0] * 65536, ys[0] * 65536, xs[1] * 65536, ys[1] * 65536,
                                 xs[2] * 65536, ys[2] * 65536);
-        const float z = 2000.0f + 400.0f * (float)i;   /* steps beyond the 2% tolerance */
-        gr_set_depth_triangle(1, z, z + 7.0f * (float)(i % 3), z + 3.0f);
+        /* Along a row each triangle is farther than all of its left neighbour
+         * (steps well beyond the 2% tolerance, below the 4096 clear threshold). */
+        const float z = 2000.0f + 2500.0f * (float)(i % 8) + 100.0f * (float)(i / 8);
+        gr_set_depth_triangle(1, z, z + 600.0f * (float)(1 + i % 3), z + 300.0f);
     }
 }
 
@@ -269,6 +272,7 @@ int main(int argc, char **argv) {
         const char *e = getenv("FG_PGXP");
         g_pgxp = e && *e;
         g_pgxp_depth = g_pgxp && strstr(e, "depth") != NULL;
+        g_pgxp_color = g_pgxp && strstr(e, "color") != NULL;
     }
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "SKIP no video (%s)\n", SDL_GetError());
@@ -304,7 +308,9 @@ int main(int argc, char **argv) {
     if (pt_mode) gl_renderer_set_present_thread(1, 3);
     if (g_pgxp) {
         gl_renderer_set_pgxp_depth(g_pgxp_depth);
-        check(gl_renderer_pgxp_render_wanted() == g_pgxp_depth, "PGXP renderer features as asked");
+        gl_renderer_set_pgxp_color_perspective(g_pgxp_color);
+        check(gl_renderer_pgxp_render_wanted() == (g_pgxp_depth || g_pgxp_color),
+              "PGXP renderer features as asked");
     }
     check(gl_renderer_render_thread_start(2) == 1, "render thread started");
     if (pt_mode) check(gl_renderer_present_thread_active(), "present thread started");

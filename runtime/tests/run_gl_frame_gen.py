@@ -29,7 +29,7 @@ SKIP_EXIT = 77
 WINDOWS = os.name == "nt" or platform.system().startswith(("MINGW", "MSYS", "CYGWIN"))
 KEYS = ("real",)
 # FG_PGXP values: the scene without PGXP renderer features first.
-PGXP_FEATURES = ("none", "depth")
+PGXP_FEATURES = ("none", "depth", "color", "depth,color")
 
 
 def parse(stdout):

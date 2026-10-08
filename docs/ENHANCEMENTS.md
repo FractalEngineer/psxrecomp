@@ -1283,7 +1283,9 @@ floats for every title. The setters sync with a live render thread
 batch as its own reason (`batch_diag` entry 8). Smooth-motion in-between
 frames replay `RTH_DEPTH` and test depth like the real frame, from their
 own clear: `gl_frame_gen_test` draws overlapping PGXP triangles out of painter
-order and requires the in-between frame at phase 1 to equal the real one.
+order and requires the in-between frame at phase 1 to equal the real one,
+with each feature (depth, colour) alone and together; each changes the real
+image there.
 
 ## IR1 — Internal resolution presets (Native … 8K) and the GL scale ceiling (2026-09-26)
 
