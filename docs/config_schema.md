@@ -627,8 +627,8 @@ quad (4:3, native-wide, Smooth motion and generated frames alike) and before
 hold-last capture, the OSD, screenshots and the swap. It reads only output
 pixels, so guest VRAM, readbacks, render passes and the Smooth motion sources
 are untouched; the bezel and OSD stay sharp; 24-bit FMV frames are not
-filtered. `fxaa` is one copy and one full-screen pass (about 0.1 ms at 1080p
-on an M4); `fxaa_hq` lowers the contrast threshold and searches further along
+filtered. The PS1 HUD is part of the same image and is filtered too. `fxaa` is one copy and one full-screen pass (on an M4, at most 0.4 /
+0.7 / 1.5 ms at 1080p / 1440p / 4K, fence-timed with the copy); `fxaa_hq` lowers the contrast threshold and searches further along
 long edges. `PSX_AA_MODE=off|fxaa|fxaa_hq` overrides it for one run and the
 `post_aa` TCP command switches it live. The older boolean `antialiasing` key is
 unrelated: it is the linear present filter the launcher already persists.
