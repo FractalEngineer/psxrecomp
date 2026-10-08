@@ -480,9 +480,9 @@ between Play and TCP availability.
 
 ## Complete command index (generated)
 
-**360 commands registered** — 347 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**361 commands registered** — 348 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-73 of 360 have prose above; **287 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+74 of 361 have prose above; **287 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -712,7 +712,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `phase_hot` | ✓ |  |  |
 | `phase_profile` | ✓ |  | ✓ |
 | `ping` | ✓ | ✓ | ✓ |
-| `post_aa` | ✓ |  |  |
+| `post_aa` | ✓ |  | ✓ |
 | `present_image_ring_get` | ✓ |  |  |
 | `present_image_ring_stats` | ✓ |  |  |
 | `present_ring` | ✓ |  |  |
