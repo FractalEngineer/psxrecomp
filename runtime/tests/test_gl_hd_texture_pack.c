@@ -459,6 +459,73 @@ int main(int argc,char** argv) {
     gl_renderer_render_thread_stop();
     check(!gl_renderer_render_thread_active(),"thread stops safely after HD transitions");
     check(vram[96*1024+224]==0x5678,"stopping the parked thread preserves final HD native draws");
+    /* Restage (savestate, rewind): an upload rectangle seen this session comes
+     * back only while its restored words still carry the replacement key. */
+    {
+        GpuHdTextureImage img={0};
+        state(); gr_vram_transfer_in(512,0,4,4,source_words);   /* resident */
+        wait_ready(0);   /* the teardown session above decodes afresh */
+        gl_renderer_restage_vram_after_savestate();
+        check(gpu_hd_textures_acquire_draw(texture_page,0,0,bounds,0,0,&img),"restage re-admits an unchanged learned upload");
+        gpu_hd_textures_release_image(&img);
+        vram[512]^=1u; gl_renderer_restage_vram_after_savestate();
+        check(!gpu_hd_textures_acquire_draw(texture_page,0,0,bounds,0,0,&img),"restage refuses a learned rectangle whose words changed");
+        gpu_hd_textures_release_image(&img);
+        vram[512]^=1u; gl_renderer_restage_vram_after_savestate();
+    }
+    /* Savestate sidecar: residency saved with the VRAM it describes restores a
+     * fresh session (a cold load) over exactly that VRAM, and only then. */
+    {
+        uint8_t* res=NULL; size_t res_len=0; GpuHdTextureImage img={0};
+        check(gpu_hd_textures_residency_save(&res,&res_len) && res_len>16,"residency saved");
+        gpu_hd_textures_shutdown();
+        /* Another pack (one more replacement key) over the same VRAM: the
+         * residency names this pack's uploads, so it is refused there. */
+        char other_root[2304],other_png[2400];
+        snprintf(other_root,sizeof(other_root),"%s/beetle-other",argv[1]);
+        snprintf(hashes,sizeof(hashes),"%s/Hashes.ini",other_root);
+        hf=fopen(hashes,"wb"); if(hf) fclose(hf);
+        const uint32_t other_keys[2]={hd_texture_crc32_words_le(source_words,16),0x12345678u};
+        for(int k=0;k<2;++k) {
+            snprintf(other_png,sizeof(other_png),"%s/demo-texture-replacements/%x-0.png",other_root,other_keys[k]);
+            bf=fopen(other_png,"wb");
+            if(bf){check(png_write_rgba(bf,beetle_rgba,16,16),"other Beetle PNG fixture");fclose(bf);}
+        }
+        check(gpu_hd_textures_configure(other_root,1,0,error,sizeof(error)),"other Beetle pack opens");
+        gl_renderer_restage_vram_after_savestate();
+        check(!gpu_hd_textures_residency_load(res,res_len),"residency refused with a different pack");
+        gpu_hd_textures_shutdown();
+        check(gpu_hd_textures_configure(beetle_root,1,0,error,sizeof(error)),"fresh Beetle session");
+        gl_renderer_restage_vram_after_savestate();
+        check(!gpu_hd_textures_acquire_draw(texture_page,0,0,bounds,0,0,&img),"a fresh session knows no upload");
+        gpu_hd_textures_release_image(&img);
+        static uint16_t saved_vram[1024*512];
+        memcpy(saved_vram,vram,sizeof(saved_vram));
+        state(); gr_fill_rect(0,0,16,16,0x001f);
+        gr_draw_textured_rect(4,4,4,4,0,0,0,0,texture_page); capture();
+        check(sample(16,16)[0]<20 && sample(16,16)[1]>200,"before the load the draw shows native artwork");
+        /* Load the state again: the VRAM it was saved with, restaged. */
+        memcpy(vram,saved_vram,sizeof(saved_vram));
+        gl_renderer_restage_vram_after_savestate();
+        res[16]^=0xffu;
+        check(!gpu_hd_textures_residency_load(res,res_len),"corrupt residency refused");
+        res[16]^=0xffu;
+        vram[300]^=1u;
+        check(!gpu_hd_textures_residency_load(res,res_len),"residency refused over different VRAM");
+        vram[300]^=1u;
+        check(gpu_hd_textures_residency_load(res,res_len),"residency restored over identical VRAM");
+        wait_ready(0);
+        /* A later textured draw of that upload uses the HD replacement (red
+         * HD columns over native green), counted as an applied draw. */
+        GpuHdTextureDiag before_draw,after_draw;
+        gpu_hd_textures_get_diag(&before_draw);
+        state(); gr_fill_rect(0,0,16,16,0x001f);
+        gr_draw_textured_rect(4,4,4,4,0,0,0,0,texture_page); capture();
+        gpu_hd_textures_get_diag(&after_draw);
+        check(sample(16,16)[0]>200 && sample(16,16)[1]<20,"after the load a textured draw shows the HD replacement");
+        check(after_draw.applied_draws>before_draw.applied_draws,"the restored upload's draw applied a replacement");
+        free(res);
+    }
     memcpy(reference,vram,sizeof(vram));
     gl_renderer_set_cpu_auth_dual(1);
     gpu_hd_textures_shutdown();

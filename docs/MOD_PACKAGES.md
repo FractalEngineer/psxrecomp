@@ -869,6 +869,18 @@ they are not copied into the package. Optional resources with no selected path
 are omitted from the committed plan. Required resources reject launch while the
 feature is enabled and unset.
 
+A `file`, `directory` or `folder` resource may name a package-relative
+`default` (for example `default = "pack"`): a file or folder the package ships
+beside its manifest. It is used while the player has selected nothing, so a
+required resource with a default resolves out of the box; a selected path
+always wins, and clearing the selection restores the default. The default
+must be a safe relative path inside the package (no absolute paths or `..`)
+and cannot be combined with verified media (`size`/`sha256`), `input_only`
+or `shared_source`. At resolve time it counts only when it exists with the
+resource's kind (folder or file) and its real path, symlinks resolved, stays
+inside the package; otherwise the resource is unset (a required one blocks
+launch).
+
 
 Format 8 adds engine-verified donor media to the same picker and state format:
 
