@@ -361,7 +361,7 @@ int main(int argc, char **argv) {
     if (pt_mode) check(gl_renderer_present_thread_active(), "present thread started");
     const char *method = getenv("FG_METHOD");
     const int rp = method && !strcmp(method, "reprojection");
-    const int pgxp = getenv("FG_PGXP") && getenv("FG_PGXP")[0] == '1';
+    const int pgxp = getenv("FG_RP_DEPTH") && getenv("FG_RP_DEPTH")[0] == '1';   /* reprojection pass: PGXP depth on */
     if (getenv("FG_PAN")) g_pan = atoi(getenv("FG_PAN")) > 0 ? atoi(getenv("FG_PAN")) : 1;
     if (pgxp) gl_renderer_set_pgxp_depth(1);
     if (fg) {

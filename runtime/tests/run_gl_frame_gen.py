@@ -156,11 +156,11 @@ def main():
             # pan 1 (the scene above, with PGXP depth): its real frames must be
             # the generation-off run's; pan 6: a camera move the warp must follow.
             for pgxp, pan in (("1", "1"), ("0", "6")):
-                env = dict(os.environ, FG_METHOD="reprojection", FG_PGXP=pgxp, FG_PAN=pan)
+                env = dict(os.environ, FG_METHOD="reprojection", FG_RP_DEPTH=pgxp, FG_PAN=pan)
                 command = [str(c) for c in (probe, s, 1, path, args.frames, timing)]
                 r = subprocess.run(command, cwd=dest, capture_output=True, text=True,
                                    encoding="utf-8", errors="replace", env=env)
-                receipt.append({"cmd": command, "env": {"FG_METHOD": "reprojection", "FG_PGXP": pgxp, "FG_PAN": pan},
+                receipt.append({"cmd": command, "env": {"FG_METHOD": "reprojection", "FG_RP_DEPTH": pgxp, "FG_PAN": pan},
                                 "exit": r.returncode, "stdout": r.stdout, "stderr": r.stderr[-4000:]})
                 (dest / "receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
                 p = parse(r.stdout)
