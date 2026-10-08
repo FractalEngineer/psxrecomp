@@ -1327,6 +1327,10 @@ struct DynresHost {
     DynrtController rt{};
     GlRthCosts last_costs{};
     uint64_t last_bp_ns = 0;
+    /* Smooth motion's generated frames (dynres_tick_rt). */
+    uint64_t last_gen = 0, last_gen_meas = 0, last_gen_cost_ns = 0;
+    double gen_mean_s = 0.0, gen_pending_s = 0.0;
+    double rt_acc_real_s = 0.0, rt_acc_gen_s = 0.0, rt_win_gen_frac = 0.0;
     unsigned long long rt_last_windows = 0;
     bool rt_trace_header = false;
     double rt_win_cpu_ms = 0.0, rt_win_gpu_ms = 0.0;   /* last window's means */
@@ -9464,18 +9468,50 @@ static void dynres_tick_rt(double now_s, double wall, double period, int held,
     g_dynres.rt_acc_gpu_frames += co.gpu_frames - c0.gpu_frames;
     g_dynres.last_costs = co;
     g_dynres.last_bp_ns = bp_ns;
-    DynrtSample smp{ period, wall, frames, cost, bp, held };
+    /* Smooth motion: the in-between frames it actually drew, at their
+     * measured cost (timed ones' mean, applied to every one drawn), are
+     * render work like the real frames'. Counted into the load instead of a
+     * reserve that assumed a full panel rate of them at an estimated cost:
+     * with room, dynamic resolution sees the room and steps up; when they
+     * crowd the real frames, the load says so. A sample whose real costs have
+     * not arrived carries its share forward to the next one that has. */
+    {
+        uint64_t gen = 0, meas = 0, gcost = 0;
+        gl_renderer_frame_gen_costs(&gen, &meas, &gcost);
+        if (meas > g_dynres.last_gen_meas)
+            g_dynres.gen_mean_s = (double)(gcost - g_dynres.last_gen_cost_ns) * 1e-9 /
+                                  (double)(meas - g_dynres.last_gen_meas);
+        if (gen >= g_dynres.last_gen)
+            g_dynres.gen_pending_s += (double)(gen - g_dynres.last_gen) * g_dynres.gen_mean_s;
+        g_dynres.last_gen = gen;
+        g_dynres.last_gen_meas = meas;
+        g_dynres.last_gen_cost_ns = gcost;
+    }
+    double gen_s = 0.0;
+    if (frames > 0 && !held) { gen_s = g_dynres.gen_pending_s; g_dynres.gen_pending_s = 0.0; }
+    if (held) g_dynres.gen_pending_s = 0.0;
+    DynrtSample smp{ period, wall, frames, cost + gen_s, bp, held };
     const int prev_level = c.level;
     const int level = dynrt_sample(&c, now_s, &smp);
+    if (frames > 0 && !held) {
+        g_dynres.rt_acc_real_s += cost;
+        g_dynres.rt_acc_gen_s += gen_s;
+    }
     /* Frame generation only spends surplus: not while the real frames are
-     * over budget (renewed every over-budget sample) and briefly after a
-     * step down, while the new level's first frames settle. */
+     * over budget on their own (renewed every over-budget sample; the
+     * in-between frames' part of the last window's load does not count, or
+     * they would switch themselves off) and briefly after a step down, while
+     * the new level's first frames settle. */
     if (level < prev_level)
         gl_renderer_frame_gen_hold("dynres stepped down", 0.25);
-    else if (c.over_streak > 0)
+    else if (c.over_streak > 0 &&
+             c.last_load * (1.0 - g_dynres.rt_win_gen_frac) >= 1.0 - c.p.margin)
         gl_renderer_frame_gen_hold("dynres over budget", 0.1);
     if (c.windows != g_dynres.rt_last_windows) {
         g_dynres.rt_last_windows = c.windows;
+        const double all = g_dynres.rt_acc_real_s + g_dynres.rt_acc_gen_s;
+        g_dynres.rt_win_gen_frac = all > 0.0 ? g_dynres.rt_acc_gen_s / all : 0.0;
+        g_dynres.rt_acc_real_s = g_dynres.rt_acc_gen_s = 0.0;
         g_dynres.rt_win_cpu_ms = g_dynres.rt_acc_frames
             ? g_dynres.rt_acc_cpu / (double)g_dynres.rt_acc_frames : 0.0;
         g_dynres.rt_win_gpu_ms = g_dynres.rt_acc_gpu_frames
