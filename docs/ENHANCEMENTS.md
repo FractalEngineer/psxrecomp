@@ -1279,7 +1279,11 @@ native px. UVs, colour, q and SZ are extrapolated with the barycentric
 coordinates of the new corners (perspective-correct where the attribute is),
 so textures do not slide. `wide` closes larger gaps but smears edge texels
 and thickens silhouettes (beam undersides at the R4 tunnel entrance); `fine`
-is the recommended setting.
+is the recommended setting. Both widths apply only above 1x, and only to
+triangles the depth buffer tests: with `pgxp_depth_buffer` off, and for
+near-camera triangles kept in painter order, a widened edge would draw over
+its neighbour, so those never expand. `gl_frame_gen_test` pins both (seam
+without depth draws exactly like no features; at 1x depth+seam like depth).
 
 **R4 (hook flavor, 10x headless-opengl, Helter Skelter tunnel, savestates
 at the entrance and inside).** Thin-feature pixel counts (features narrower

@@ -550,8 +550,9 @@ struct RuntimeConfig {
     // or write), cleared per drawing area, after fills and when the average
     // SZ jumps back by pgxp_depth_threshold (SZ units, default 4096).
     // pgxp_color_correction: perspective-correct Gouraud colour.
-    // pgxp_seam: expand opaque 3D polygons to close T-junction cracks above
-    // 1x ("off", "fine" = 1 output px, "wide" = half a native px).
+    // pgxp_seam: expand depth-tested opaque 3D polygons (needs
+    // pgxp_depth_buffer) to close T-junction cracks above 1x ("off",
+    // "fine" = 1 output px, "wide" = half a native px).
     bool                  video_pgxp_depth_buffer = false;
     bool                  video_pgxp_color_correction = false;
     int                   video_pgxp_seam = 0;

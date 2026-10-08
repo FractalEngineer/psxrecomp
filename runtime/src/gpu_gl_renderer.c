@@ -3903,7 +3903,7 @@ static float pgxp_seam_width(void) {
         if (fine_px < 0.0f) fine_px = 0.0f;
     }
     if (s_pgxp_seam == 1) return s_out_scale > 1 ? fine_px / (float)s_out_scale : 0.0f;
-    if (s_pgxp_seam == 2) return 0.5f;
+    if (s_pgxp_seam == 2) return s_out_scale > 1 ? 0.5f : 0.0f;   /* above 1x only, as fine */
     return 0.0f;
 }
 static int seam_expand(float x[3], float y[3], float e, float B[3][3]) {
@@ -4167,7 +4167,10 @@ static void gpu_geometry(GLenum mode, const int *xs, const int *ys,
     }
     if (n == 3 && pgxp_tri_is_3d()) {
         float z[3] = { s_pz[0], s_pz[1], s_pz[2] };
-        if (semi < 0 && s_pgxp_seam) {
+        /* Only a triangle the depth buffer tests (mode 1) expands: without
+         * depth, or near the camera where triangles stay painter-ordered, a
+         * widened edge would draw over its neighbour. */
+        if (dmode == 1 && s_pgxp_seam) {
             float x[3], y[3], B[3][3];
             for (int i = 0; i < 3; i++) { x[i] = v0[i * 6]; y[i] = v0[i * 6 + 1]; }
             if (seam_expand(x, y, pgxp_seam_width(), B)) {
@@ -4346,7 +4349,7 @@ static void gpu_textured_triangle(const int *xs, const int *ys,
         if (pgxp_tri_is_3d()) {
             float *t0 = &s_tb[s_tb_n * TEXV];
             float z[3] = { s_pz[0], s_pz[1], s_pz[2] };
-            if (semi < 0 && s_pgxp_seam) {
+            if (tdmode == 1 && s_pgxp_seam) {   /* depth-tested only (gpu_geometry) */
                 float x[3], y[3], B[3][3];
                 for (int i = 0; i < 3; i++) { x[i] = t0[i * TEXV]; y[i] = t0[i * TEXV + 1]; }
                 if (seam_expand(x, y, pgxp_seam_width(), B)) {

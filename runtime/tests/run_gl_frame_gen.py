@@ -29,7 +29,11 @@ SKIP_EXIT = 77
 WINDOWS = os.name == "nt" or platform.system().startswith(("MINGW", "MSYS", "CYGWIN"))
 KEYS = ("real",)
 # FG_PGXP values: the scene without PGXP renderer features first.
-PGXP_FEATURES = ("none", "depth", "color", "depth,color")
+PGXP_FEATURES = ("none", "depth", "color", "depth,color", "seam", "depth,seam")
+# Seam expansion applies only above 1x and only to depth-tested triangles:
+# these feature sets must draw exactly like the named one (scale 1: all
+# scales), every other one must differ from "none".
+PGXP_SAME = {("seam", None): "none", ("depth,seam", 1): "depth"}
 
 
 def parse(stdout):
@@ -218,9 +222,18 @@ def main():
                 ok = False
             digests[feats] = runs[0]
         for feats in PGXP_FEATURES[1:]:
+            same = PGXP_SAME.get((feats, None)) or PGXP_SAME.get((feats, s))
+            if same:
+                if digests[feats] != digests[same]:
+                    print(f"FAIL scale {s} pgxp={feats}: differs from pgxp={same}")
+                    ok = False
+                continue
             if digests[feats] == digests[PGXP_FEATURES[0]]:
                 print(f"FAIL scale {s} pgxp={feats}: the feature does not change the real image")
                 ok = False
+        if s > 1 and digests["depth,seam"] == digests["depth"]:
+            print(f"FAIL scale {s}: seam expansion does not change the depth-tested image")
+            ok = False
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 
