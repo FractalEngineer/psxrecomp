@@ -73,6 +73,11 @@
 #include <stdarg.h>
 #include <stdint.h>
 
+#if defined(_MSC_VER)
+/* MSVC's three-argument reentrant tokenizer is named strtok_s. */
+#  define strtok_r strtok_s
+#endif
+
 #ifndef DEFAULT_DEBUG_PORT
 #error DEFAULT_DEBUG_PORT must be defined by the runtime target.
 #endif
