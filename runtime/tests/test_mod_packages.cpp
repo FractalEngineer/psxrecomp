@@ -706,6 +706,46 @@ int main() {
     check(default_resource.feature_resource_path(
               "default-resource.mod", "pack", "pack") == root / "selected/pack",
           "a selected resource path must override the package default");
+    {
+        /* Clearing the selection (state.toml holding an empty path, or no
+         * entry at all) restores the package default. */
+        auto sel = default_resource.selections();
+        sel["default-resource.mod"].features["pack"].resources["pack"] = "";
+        auto kept = default_resource.exchange_selections(sel);
+        check(default_resource.feature_resource_path(
+                  "default-resource.mod", "pack", "pack") == default_pack,
+              "a cleared selection must restore the package default");
+        sel["default-resource.mod"].features["pack"].resources.erase("pack");
+        default_resource.exchange_selections(sel);
+        check(default_resource.feature_resource_path(
+                  "default-resource.mod", "pack", "pack") == default_pack,
+              "a removed selection must restore the package default");
+        default_resource.exchange_selections(kept);
+    }
+    {
+        /* The default must exist, and its real path must stay inside the
+         * package: a shipped symlink pointing outside is not followed. */
+        ModPackageManager probe(root);
+        fs::remove_all(default_pack, ec);
+        check(probe.scan(&error), error.c_str());
+        check(probe.feature_resource_path("default-resource.mod", "pack", "pack").empty(),
+              "a missing default folder must not count as resolved");
+        check(!probe.resolve("SLUS-TEST").ok,
+              "a required resource whose default is missing must block launch");
+        const fs::path outside = root / "outside-pack";
+        fs::create_directories(outside, ec);
+        fs::create_directory_symlink(outside, default_pack, ec);
+        if (!ec) {
+            ModPackageManager linked(root);
+            check(linked.scan(&error), error.c_str());
+            check(linked.feature_resource_path("default-resource.mod", "pack", "pack").empty(),
+                  "a default that is a symlink out of the package must be rejected");
+            check(!linked.resolve("SLUS-TEST").ok,
+                  "a default escaping the package must not resolve");
+            fs::remove(default_pack, ec);
+        }
+        fs::remove_all(outside, ec);
+    }
     fs::remove_all(root / "installed/default-resource.mod", ec);
     {
         const fs::path unsafe_root = root / "unsafe-default";

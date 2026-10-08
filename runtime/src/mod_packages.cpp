@@ -861,6 +861,26 @@ std::string effective_option_value(const ModPackage& package,
     return option ? option->default_value : std::string();
 }
 
+/* A resource's package-relative default, only when it exists with the
+ * resource's kind (folder or file) and its real path (symlinks resolved)
+ * stays inside the package: the manifest check is text-only, and a symlink
+ * the package ships could point anywhere. {} otherwise (the resource is then
+ * unset, so a required one blocks launch as before). */
+static fs::path package_default_path(const ModPackage& package, const ModResource& resource) {
+    std::error_code ec;
+    const fs::path candidate = package.root / fs::u8path(resource.default_path);
+    const bool folder = resource.format == "directory" || resource.format == "folder";
+    if (folder ? !fs::is_directory(candidate, ec) : !fs::is_regular_file(candidate, ec))
+        return {};
+    const fs::path real = fs::canonical(candidate, ec);
+    if (ec) return {};
+    const fs::path base = fs::canonical(package.root, ec);
+    if (ec) return {};
+    const auto rel = real.lexically_relative(base);
+    if (rel.empty() || rel.is_absolute() || *rel.begin() == "..") return {};
+    return candidate;
+}
+
 fs::path effective_resource_path(const ModPackage& package,
                                  const ModSelection& selection,
                                  const std::string& feature_id,
@@ -876,7 +896,7 @@ fs::path effective_resource_path(const ModPackage& package,
     }
     const ModResource* declared = find_resource(package, feature_id, id);
     if (declared && !declared->default_path.empty() && !package.root.empty())
-        return package.root / fs::u8path(declared->default_path);
+        return package_default_path(package, *declared);
     return {};
 }
 
