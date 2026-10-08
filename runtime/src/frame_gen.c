@@ -632,7 +632,12 @@ int fg_plan(double flip_s, double refresh_hz, double real_cost_s,
     if (n > max_gens) n = max_gens;
     const double room = budget * flip_s - (real_cost_s > 0.0 ? real_cost_s : 0.0);
     if (room <= 0.0) return 0;
-    if (gen_cost_s <= 0.0) return room >= 0.5 * budget * flip_s ? 1 : 0;
+    /* Unmeasured: one frame to measure it, while a third of the budget is
+     * free (a generated frame costs a fraction of a real one). Half was too
+     * strict: a real frame over 42 % of the interval (Windows, R4 at 30 Hz
+     * with the display ring: 2 x 7.2 ms of 33.4) never let the first one be
+     * drawn, so the cost was never measured and nothing was generated. */
+    if (gen_cost_s <= 0.0) return room >= budget * flip_s / 3.0 ? 1 : 0;
     int fit = (int)floor(room / gen_cost_s);
     return fit < n ? (fit > 0 ? fit : 0) : n;
 }

@@ -135,8 +135,8 @@ void fg_cam_place(const FgPrimList *newer, FgCamFit *fit, const FgVert *verts,
  *   gen_cost_s   the cost of one generated frame, 0 when not yet measured
  *   budget       share of the interval the real and generated work may use
  * Returns 0..slots-1, where slots = round(flip_s * refresh_hz); an unknown
- * generation cost allows one frame while the real cost leaves half the
- * interval, so the cost gets measured. */
+ * generation cost allows one frame while the real cost leaves a third of the
+ * budget, so the cost gets measured. */
 int fg_plan(double flip_s, double refresh_hz, double real_cost_s,
             double gen_cost_s, double budget, int max_gens);
 

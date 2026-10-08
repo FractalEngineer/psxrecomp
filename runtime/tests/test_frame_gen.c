@@ -202,8 +202,11 @@ static void test_plan(void) {
     /* Only what fits: 33.4 ms * 0.85 = 28.4; real 20 ms leaves 8.4 -> two of 4 ms. */
     check(fg_plan(f30, 120.0, 0.020, 0.004, 0.85, 7) == 2, "only what fits");
     check(fg_plan(f30, 120.0, 0.030, 0.001, 0.85, 7) == 0, "no surplus: none");
-    /* Unknown generation cost: one, if half the budget is free. */
+    /* Unknown generation cost: one, if a third of the budget is free. */
     check(fg_plan(f30, 120.0, 0.010, 0.0, 0.85, 7) == 1, "unmeasured: one to measure");
+    /* Windows, R4 30 Hz with the display ring: 2 x 7.2 ms real leaves 14 of
+     * 28.4 ms, under half; one is still drawn to measure the cost. */
+    check(fg_plan(f30, 120.0, 0.0144, 0.0, 0.85, 7) == 1, "unmeasured, real over 42 %: one to measure");
     check(fg_plan(f30, 120.0, 0.020, 0.0, 0.85, 7) == 0, "unmeasured without room: none");
     check(fg_plan(f30, 240.0, 0.001, 0.0001, 0.85, 2) == 2, "max_gens caps");
 }
