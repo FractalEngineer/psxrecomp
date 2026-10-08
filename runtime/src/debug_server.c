@@ -8557,6 +8557,16 @@ static void handle_synth_recurse(int id, const char *json)
 #endif
 }
 
+/* post_aa: post-process anti-aliasing, live. {"cmd":"post_aa"} reads it,
+ * {"cmd":"post_aa","mode":0|1|2} sets it (off, fxaa, fxaa_hq). */
+static void handle_post_aa(int id, const char *json)
+{
+    int mode = json_get_int(json, "mode", -1);
+    if (mode >= 0) (void)gl_renderer_set_post_aa(mode);
+    send_fmt("{\"id\":%d,\"ok\":true,\"mode\":%d,\"passes\":%llu}", id,
+             gl_renderer_post_aa(), (unsigned long long)gl_renderer_post_aa_passes());
+}
+
 static void handle_frame_perf(int id, const char *json)
 {
     (void)json;
@@ -15632,6 +15642,7 @@ static const CmdEntry s_commands[] = {
     { "gpu_timeline",      handle_gpu_timeline },
     { "nclip_stats",       handle_nclip_stats },
     { "frame_perf",        handle_frame_perf },
+    { "post_aa",           handle_post_aa },
     { "gl_ws_ablate",      handle_gl_ws_ablate },
     { "gl_interp",         handle_gl_interp },
     { "render_pass_stats", handle_render_pass_stats },

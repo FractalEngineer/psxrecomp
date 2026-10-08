@@ -450,6 +450,15 @@ struct RuntimeConfig {
     // Defaults to true.
     bool                  video_antialiasing = true;
 
+    // antialiasing_mode: post-process anti-aliasing of the composed game image
+    // (OpenGL; GL_POST_AA_* in gpu_gl_renderer.h): "off" (default) | "fxaa" |
+    // "fxaa_hq". Separate from the legacy antialiasing bool above, which the
+    // launcher and settings.toml already persist as the linear present filter.
+    int                   video_antialiasing_mode = 0;
+    // supersample: factor on the internal-resolution target (Match display or
+    // a line preset), 1.0..4.0, kept in thousandths (internal_resolution.h).
+    int                   video_supersample_milli = 1000;
+
     // texture_filtering: "nearest" (default, native PSX look) | "bilinear"
     // (smooths textures and 2D backgrounds). Stored as 0/1.
     int                   video_texture_filter = 0;

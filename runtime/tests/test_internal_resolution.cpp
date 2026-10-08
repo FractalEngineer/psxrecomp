@@ -200,6 +200,21 @@ int main() {
         expect("legacy round trip",
                psx_resolve_internal_scale(psx_ir_from_supersampling(n, 240), 240, 0, 32), n);
 
+    // Supersample: a factor on the target, not on native or the legacy factor.
+    expect("ss parse 1.5", psx_ss_parse_milli("1.5"), 1500);
+    expect("ss parse 2x", psx_ss_parse_milli("2x"), 2000);
+    expect("ss parse 4", psx_ss_parse_milli("4"), 4000);
+    expect("ss reject 0.5", psx_ss_parse_milli("0.5"), 0);
+    expect("ss reject 5", psx_ss_parse_milli("5"), 0);
+    expect("ss reject junk", psx_ss_parse_milli("2y"), 0);
+    expect("ss 1.0 is the plain resolve",
+           psx_resolve_internal_scale_ss(PSX_IR_DISPLAY, 240, 1080, 32, 1000), 5);
+    expect("ss 2.0 match display 1080", psx_resolve_internal_scale_ss(PSX_IR_DISPLAY, 240, 1080, 32, 2000), 9);
+    expect("ss 1.5 at 1440p", psx_resolve_internal_scale_ss(1440, 240, 0, 32, 1500), 9);
+    expect("ss leaves native", psx_resolve_internal_scale_ss(PSX_IR_NATIVE, 240, 1080, 32, 4000), 1);
+    expect("ss clamps to the ceiling", psx_resolve_internal_scale_ss(4320, 240, 0, 32, 4000), 32);
+    expect("ss unknown display stays 1", psx_resolve_internal_scale_ss(PSX_IR_DISPLAY, 240, 0, 32, 2000), 1);
+
     launcher_round_trips();
 
     if (g_failures) return 1;

@@ -1220,6 +1220,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE void psx_web_set_smooth_60fps(int enabled) {
 /* [video] options, resolved from the game config (defaults: native + AA). */
 static int           g_video_scale = 1;     /* internal-resolution SSAA factor */
 static bool          g_video_aa    = true;  /* linear present filtering */
+static int           g_video_post_aa = 0;   /* [video] antialiasing_mode / PSX_AA_MODE (GL_POST_AA_*) */
+static int           g_video_ss_milli = 1000; /* [video] supersample / PSX_SUPERSAMPLE */
 /* FMV present reconstruction (VIDEO_FMV_FILTER_*), pushed to the GL renderer
  * once the config is resolved. Only consulted while g_video_aa is on. */
 static int           g_video_fmv_filter = PSXRecompV4::VIDEO_FMV_FILTER_DEFAULT;
@@ -1365,8 +1367,9 @@ static int effective_internal_resolution(void) {
 static void apply_internal_resolution(int display_px_h) {
     const int preset = effective_internal_resolution();
     if (preset == PSX_IR_UNSET) return;
-    g_video_scale = psx_resolve_internal_scale(preset, g_video_ref_lines,
-                                               display_px_h, video_scale_ceiling());
+    g_video_scale = psx_resolve_internal_scale_ss(preset, g_video_ref_lines,
+                                                  display_px_h, video_scale_ceiling(),
+                                                  g_video_ss_milli);
 }
 
 /* The value the launcher row starts on: the preset, or the legacy factor shown
@@ -15773,6 +15776,8 @@ int main(int argc, char** argv) {
                 g_video_win_w = gc.runtime.video_window_width;
             }
             g_video_aa         = gc.runtime.video_antialiasing;
+            g_video_post_aa    = gc.runtime.video_antialiasing_mode;
+            g_video_ss_milli   = gc.runtime.video_supersample_milli;
             g_video_texfilter  = gc.runtime.video_texture_filter;
             g_video_fmv_filter = gc.runtime.video_fmv_filter;
             g_video_geometry_correction   =
@@ -18062,6 +18067,22 @@ session_reboot:
         else std::fprintf(stdout, "psxrecomp: PSX_INTERNAL_RESOLUTION=%s not understood "
                           "(native, 720p, 1080p, 1440p, 4k, 5k, 8k, display, or lines)\n", e);
     }
+    /* PSX_SUPERSAMPLE (1.0..4.0) and PSX_AA_MODE (off, fxaa, fxaa_hq): one-run
+     * overrides of [video] supersample / antialiasing_mode. */
+    if (const char* e = std::getenv("PSX_SUPERSAMPLE")) {
+        const int m = psx_ss_parse_milli(e);
+        if (m) g_video_ss_milli = m;
+        else std::fprintf(stdout, "psxrecomp: PSX_SUPERSAMPLE=%s not understood (1.0..4.0)\n", e);
+    }
+    if (const char* e = std::getenv("PSX_AA_MODE")) {
+        if (!std::strcmp(e, "off")) g_video_post_aa = GL_POST_AA_OFF;
+        else if (!std::strcmp(e, "fxaa")) g_video_post_aa = GL_POST_AA_FXAA;
+        else if (!std::strcmp(e, "fxaa_hq")) g_video_post_aa = GL_POST_AA_FXAA_HQ;
+        else std::fprintf(stdout, "psxrecomp: PSX_AA_MODE=%s not understood (off, fxaa, fxaa_hq)\n", e);
+    }
+    if (g_video_ss_milli != 1000)
+        std::fprintf(stdout, "psxrecomp: supersample %.3gx on the internal-resolution target\n",
+                     g_video_ss_milli / 1000.0);
     apply_internal_resolution(psx_sdl_display_pixel_height(nullptr));
     if (g_video_scale < 1) g_video_scale = 1;
     if (const char* e = std::getenv("PSX_DYNRES"))
@@ -18459,6 +18480,7 @@ session_reboot:
             return 1;
         }
         gl_renderer_set_swap_interval(0);
+        (void)gl_renderer_set_post_aa(g_video_post_aa);
         g_gl_active = gl_renderer_init_context(s_headless_gl_window) != 0;
         if (!g_gl_active || gr_backend() != GR_BACKEND_OPENGL ||
             !(SDL_GetWindowFlags(s_headless_gl_window) & SDL_WINDOW_HIDDEN)) {
@@ -18640,8 +18662,9 @@ session_reboot:
          * surface is allocated at context init below. */
         if (effective_internal_resolution() == PSX_IR_DISPLAY && g_video_scale_applies) {
             const int dh = psx_sdl_display_pixel_height(sdl_window);
-            const int s = psx_resolve_internal_scale(PSX_IR_DISPLAY, g_video_ref_lines,
-                                                     dh, GL_MAX_INTERNAL_SCALE);
+            const int s = psx_resolve_internal_scale_ss(PSX_IR_DISPLAY, g_video_ref_lines,
+                                                        dh, GL_MAX_INTERNAL_SCALE,
+                                                        g_video_ss_milli);
             gr_set_scale(s);
             g_video_requested_scale = s;
             std::fprintf(stdout, "psxrecomp: internal resolution Match display: "
@@ -18652,6 +18675,7 @@ session_reboot:
          * (the ceiling) and the level steps under it (dynres_setup). */
         gl_renderer_set_dynamic_resolution(
             (dynres_requested() && g_video_scale_applies) ? 1 : 0);
+        (void)gl_renderer_set_post_aa(g_video_post_aa);
         g_gl_active = (gl_renderer_init_context(sdl_window) != 0);
         dynres_setup();
 
