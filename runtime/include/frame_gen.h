@@ -148,7 +148,11 @@ double fg_clock_phase(uint64_t since_real_ns, uint64_t step_ns, uint64_t flip_ns
 /* HUD motion between two frames' 2D triangles (frame_gen.c). */
 void fg_hud_lerp(const FgPrimList *L, const FgPrimList *O, double u, float *x, float *y,
                  float max_px);
-/* The refresh fg_plan sees: rounded up to whole slots per game frame. */
+/* fg_slots: display intervals a game frame `flip_s` long fills on a
+ * `refresh_hz` display as the clock (fg_clock_phase) schedules it: the
+ * in-between frames it shows plus the real one. fg_plan_hz: the refresh
+ * fg_plan sees, so its slots are exactly fg_slots. */
+int fg_slots(double flip_s, double refresh_hz);
 double fg_plan_hz(double flip_s, double refresh_hz);
 /* The next present time on the global grid after presenting at `now`. */
 uint64_t fg_next_due(uint64_t due, uint64_t now, uint64_t step_ns);

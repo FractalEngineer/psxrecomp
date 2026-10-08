@@ -77,8 +77,10 @@ has measured time to spare.
   that lead to it: up to `n/(n+1)` of a game frame later than without
   generation (R4 at 30 Hz on 120 Hz: 25 ms at n = 3, 17 ms at n = 1).
   Extrapolation (no delay, guessed motion) is not offered.
-- **Plan.** `n = fg_plan(...)`: slots = round(flip interval × refresh)
-  (R4 on 120 Hz: 4), limited to what fits in 85 % of the interval after the
+- **Plan.** `n = fg_plan(...)`: slots = `fg_slots`, the display intervals
+  the clock actually fills (in-between frames at phase k / (flip × refresh)
+  below 0.985, plus the real one: R4 on 120 Hz: 4; 59.94 Hz content on a
+  60 Hz panel, 2.002 intervals: 2, one in-between frame), limited to what fits in 85 % of the interval after the
   real frames' render-thread CPU time and one swap, at the measured cost of a
   generated frame (CPU, GPU via `GL_TIME_ELAPSED`, plus a swap). On macOS a
   real frame's `TIME_ELAPSED` span reads close to the whole interval (it
@@ -95,6 +97,15 @@ has measured time to spare.
   One frame behind just shows the waiting real frame at once.
 - **Sync points** show the waiting real frame and restart the lists at the
   next flip.
+
+- **Variable refresh.** `[video] vsync = "vrr"` (game.toml, or the
+  player's settings.toml, which a launcher save writes back as `"vrr"`):
+  for G-Sync / FreeSync / ProMotion panels. Each frame is presented when it
+  is ready (swap interval 0); Smooth motion targets the panel's maximum
+  refresh at the current size and never exceeds it. The other modes are
+  `"on"` (default), `"immediate"` (`"off"`) and `"adaptive"`.
+  `PSX_HOST_REFRESH_HZ` / `PSX_HOST_REFRESH_MAX_HZ` simulate a display in
+  headless tests.
 
 ## Limits
 

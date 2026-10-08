@@ -10158,7 +10158,10 @@ static int       s_fg_have_last = 0, s_fg_last_dx = 0, s_fg_last_dy = 0;
  * when drawing moves to another buffer (games flip at a VBlank after they
  * start the next frame, so a flip is not a list boundary). */
 static int       s_fg_buf[4][4], s_fg_nbuf = 0, s_fg_cur_buf = -1;
-static int       s_fg_vblanks = 0, s_fg_flip_vb = 1;   /* presents per flip */
+static int       s_fg_vblanks = 0;
+/* Presents per flip. Written by the render thread, read by the emulation
+ * thread (gl_renderer_frame_gen_real_share): atomic. */
+static _Atomic int s_fg_flip_vb = 1;
 /* The camera fit of the pair a schedule draws from and each newer vertex's
  * placement (fg_cam_fit), positions at the current phase, and the pending
  * vertex sources of the next triangle (RTH_FG_SRC: ids, integer x/y,
@@ -10241,10 +10244,14 @@ static int fg_recently_generated(void) {
 /* Render thread: every swap's wall time. A swap waits for the compositor
  * (and on a busy WindowServer for its round trip); each generated frame adds
  * one, so the plan counts it. */
-static double s_fg_swap_ema = 0.0;
+/* Written by the render thread, read by the emulation thread
+ * (gl_renderer_frame_gen_real_share): atomic, as is the published copy of
+ * the generated-frame cost estimate (s_fg_cost.ema, render thread only). */
+static _Atomic double s_fg_swap_ema = 0.0;
+static _Atomic double s_fg_cost_ema_pub = 0.0;
 static void fg_note_swap(uint64_t ns) {
-    const double c = (double)ns * 1e-9;
-    s_fg_swap_ema = s_fg_swap_ema > 0.0 ? s_fg_swap_ema * 0.9 + c * 0.1 : c;
+    const double c = (double)ns * 1e-9, e = atomic_load(&s_fg_swap_ema);
+    atomic_store(&s_fg_swap_ema, e > 0.0 ? e * 0.9 + c * 0.1 : c);
 }
 
 /* A real VBlank frame's render-thread cost, for the plan: its CPU time. Its
@@ -11017,6 +11024,7 @@ static void fg_gen_cost_poll(void) {
         p_glGetQueryObjectui64v(s_fg_q[i], GL_QUERY_RESULT, &ns);
         double c = (double)(ns > s_fg_q_cpu[i] ? ns : s_fg_q_cpu[i]) * 1e-9;
         fg_cost_add(fg_cost(), c, s_fg_fit_s);
+        atomic_store(&s_fg_cost_ema_pub, fg_cost()->ema);
         s_fg_gen_gpu_ms = (double)ns * 1e-6;
         s_fg_gen_cpu_ms = (double)s_fg_q_cpu[i] * 1e-6;
         s_fg_qt++;
@@ -11220,8 +11228,10 @@ static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stal
     }
     if (s_fg_pending) fg_flush();
     s_fg_flips++;
-    s_fg_flip_vb = s_fg_have_last ? s_fg_vblanks : 1;
-    if (s_fg_flip_vb > 4) s_fg_flip_vb = 4;
+    {
+        const int vb = s_fg_have_last ? s_fg_vblanks : 1;
+        atomic_store(&s_fg_flip_vb, vb > 4 ? 4 : vb);
+    }
     s_fg_vblanks = 0;
     s_fg_have_last = 1; s_fg_last_dx = disp[0]; s_fg_last_dy = disp[1];
     /* A game that flips right after drawing: the capturing list is this
@@ -11269,7 +11279,7 @@ static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stal
     FG_BRK_INIT();
     const double ghz = atomic_load(&s_fg_guest_hz), rhz = atomic_load(&s_fg_refresh_hz);
     const double flip_s = (double)s_fg_flip_vb / (ghz > 1.0 ? ghz : 59.94);
-    const int slots = (int)floor(flip_s * rhz + 0.5);
+    const int slots = fg_slots(flip_s, rhz);   /* as the clock shows them */
     s_fg_last_slots = slots;
     /* What one generated frame may cost (its swap included) to fit. */
     const double real_s = s_fg_real_ema * (double)s_fg_flip_vb + s_fg_swap_ema;
@@ -11293,6 +11303,7 @@ static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stal
         if (s_fg_force) n = slots > 1 ? slots - 1 : 1;
         else if (fg_breaker_open(&s_fg_brk, now) && !stale && !held) {
             const double est = fg_cost_estimate(fg_cost(), now, s_fg_fit_s);
+            atomic_store(&s_fg_cost_ema_pub, fg_cost()->ema);
             n = fg_plan(flip_s, fg_plan_hz(flip_s, rhz), real_s, est > 0.0 ? est + s_fg_swap_ema : 0.0, 0.85,
                         fg_ceiling_get(fg_ceil(), now));
         }
@@ -11413,10 +11424,14 @@ void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int3
 double gl_renderer_frame_gen_real_share(void) {
     if (!s_fg_on || !rth_record_mode()) return 1.0;
     const double ghz = atomic_load(&s_fg_guest_hz), rhz = atomic_load(&s_fg_refresh_hz);
-    const double flip_s = (double)s_fg_flip_vb / (ghz > 1.0 ? ghz : 59.94);
-    if (flip_s <= 0.0 || rhz <= 0.0 || s_fg_flip_vb < 2) return 1.0;
-    const int slots = (int)ceil(flip_s * rhz - 1e-6);
-    const double g = s_fg_cost.ema > 0.0 ? s_fg_cost.ema + s_fg_swap_ema : 0.0;
+    const int vb = atomic_load(&s_fg_flip_vb);
+    const double flip_s = (double)vb / (ghz > 1.0 ? ghz : 59.94);
+    if (flip_s <= 0.0 || rhz <= 0.0 || vb < 2) return 1.0;
+    /* The frames the clock actually shows (fg_slots): 59.94 Hz content on a
+     * 60 Hz panel is 2.002 intervals, one in-between frame, not two. */
+    const int slots = fg_slots(flip_s, rhz);
+    const double ema = atomic_load(&s_fg_cost_ema_pub);
+    const double g = ema > 0.0 ? ema + atomic_load(&s_fg_swap_ema) : 0.0;
     if (slots < 2 || g <= 0.0) return 1.0;
     double share = (0.85 * flip_s - (double)(slots - 1) * g) / flip_s;
     if (share < 0.35) share = 0.35;

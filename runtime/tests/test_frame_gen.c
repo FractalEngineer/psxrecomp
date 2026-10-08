@@ -325,8 +325,14 @@ static void test_any_rate(void) {
         const int n = fg_plan(flip_s, fg_plan_hz(flip_s, hz), 0.001, 0.0005, 0.85, 64);
         uint64_t due = 0, last = 0, min_gap = UINT64_MAX;
         unsigned presents = 0, frames = 300, gens = 0;
-        int phase_ok = 1;
+        int phase_ok = 1, shown_ok = 1;
+        unsigned max_shown = 0;
+        /* A whole number of intervals a game frame (59.94 Hz content on
+         * 60 / 120 / 240 / 360 Hz): every game frame shows the same count. */
+        const double x = flip_s * hz;
+        const int whole = fabs(x - floor(x + 0.5)) < 0.01;
         for (unsigned f = 0; f < frames; f++) {
+            const unsigned gens_before = gens;
             const uint64_t t0 = (uint64_t)f * flip_ns, next = t0 + flip_ns;
             if (due < t0 || due > t0 + step) due = t0;
             double prev_t = 0.0;
@@ -349,6 +355,10 @@ static void test_any_rate(void) {
                 due = fg_next_due(due, now, step);
                 break;
             }
+            /* Every planned in-between frame is shown (the plan, and the
+             * dynamic resolution budget built on it, count no dropped one). */
+            if (f > 0 && gens - gens_before > max_shown) max_shown = gens - gens_before;
+            if (f > 0 && whole && gens - gens_before != (unsigned)n) shown_ok = 0;
         }
         const double secs = frames * flip_s, rate = presents / secs;
         char what[96];
@@ -356,8 +366,27 @@ static void test_any_rate(void) {
         check(phase_ok && rate > hz * 0.95 && rate < hz * 1.03, what);
         snprintf(what, sizeof what, "%.0f Hz: no two presents closer than one interval", hz);
         check(min_gap + 1000u >= step, what);
-        (void)gens;
+        /* The plan (and the dynamic resolution budget built on it) is the
+         * most frames the clock shows in a game frame: none planned is
+         * dropped every frame, none shown is unbudgeted. */
+        snprintf(what, sizeof what, "%.0f Hz: the clock shows up to the %d planned frames", hz, n);
+        check(max_shown == (unsigned)n && shown_ok, what);
     }
+}
+
+/* 59.94 Hz content (two VBlanks a game frame) on 60 / 120 Hz panels: 2.002
+ * and 4.004 intervals. The clock shows 1 / 3 in-between frames; the plan
+ * and the dynamic resolution share count exactly those (fg_slots). */
+static void test_slots_5994(void) {
+    const double flip_s = 2.0 / 59.94;
+    check(fg_slots(flip_s, 60.0) == 2, "59.94 on 60 Hz: 2 slots (1 in-between frame)");
+    check(fg_slots(flip_s, 120.0) == 4, "59.94 on 120 Hz: 4 slots");
+    check(fg_slots(flip_s, 100.0) == 4, "59.94 on 100 Hz: 4 slots (3.34 intervals)");
+    check(fg_slots(2.0 / 60.0, 60.0) == 2, "60 on 60 Hz: 2 slots");
+    check(fg_plan(flip_s, fg_plan_hz(flip_s, 60.0), 0.001, 0.0005, 0.85, 64) == 1,
+          "59.94 on 60 Hz: one in-between frame planned");
+    check(fg_plan(flip_s, fg_plan_hz(flip_s, 120.0), 0.001, 0.0005, 0.85, 64) == 3,
+          "59.94 on 120 Hz: three planned");
 }
 
 static void test_hud_lerp(void) {
@@ -375,10 +404,28 @@ static void test_hud_lerp(void) {
     check(x[2] == 20.0f && x[0] == 10.0f, "HUD needle halfway between the frames");
     check(x[5] == 15.0f, "a changed digit stays as drawn");
     fg_prims_free(&L); fg_prims_free(&O);
+
+    /* The match window is 8 2D triangles of the other frame, the 8th
+     * included: a needle found there still moves, one at the 9th does not. */
+    for (int at = 8; at <= 9; at++) {
+        FgPrimList A = {0}, B = {0};
+        memset(&p, 0, sizeof p);
+        p.key = 7; p.view = 1;
+        p.x[0] = 10; p.y[0] = 10; p.x[1] = 20; p.y[1] = 10; p.x[2] = 15; p.y[2] = 30;
+        fg_prims_add(&A, &p);
+        for (int i = 1; i < at; i++) { FgPrim o = p; o.key = 100 + i; fg_prims_add(&B, &o); }
+        FgPrim m = p; m.x[2] = 25; fg_prims_add(&B, &m);
+        float ax[3] = { 10, 20, 15 }, ay[3] = { 10, 10, 30 };
+        fg_hud_lerp(&A, &B, 0.5, ax, ay, 24.0f);
+        check(at == 8 ? ax[2] == 20.0f : ax[2] == 15.0f,
+              at == 8 ? "a match at the 8th 2D triangle moves" : "a match at the 9th stays");
+        fg_prims_free(&A); fg_prims_free(&B);
+    }
 }
 
 int main(void) {
     test_hud_lerp();
+    test_slots_5994();
     test_any_rate();
     test_ceiling();
     test_cost();

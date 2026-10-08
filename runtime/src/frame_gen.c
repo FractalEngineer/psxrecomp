@@ -661,12 +661,25 @@ double fg_step_s(double flip_s, double refresh_hz, int n) {
     return flip_s / (double)(n + 1);
 }
 
+/* The last phase fg_clock_phase still generates; at or past it the next
+ * real frame is due. Shared with fg_slots so the plan (and the dynamic
+ * resolution budget) counts exactly the frames the clock shows. */
+#define FG_PHASE_LAST 0.985
+
+int fg_slots(double flip_s, double refresh_hz) {
+    if (flip_s <= 0.0 || refresh_hz <= 0.0) return 0;
+    /* The clock generates at phase k / (flip_s * refresh_hz), k = 1, 2, ...
+     * while below FG_PHASE_LAST: 59.94 Hz content on 60 Hz (2.002
+     * intervals) shows one, at 100 Hz (3.34) three, on 120 Hz (4.004) three. */
+    const double step = 1.0 / (flip_s * refresh_hz);
+    int k = 1;
+    while (k < 64 && (double)k * step < FG_PHASE_LAST) k++;
+    return k;   /* the shown in-between frames + the real one */
+}
+
 double fg_plan_hz(double flip_s, double refresh_hz) {
     if (flip_s <= 0.0 || refresh_hz <= 0.0) return refresh_hz;
-    /* Room for every display interval a game frame can hold (3.34 at
-     * 100 Hz -> 4 slots); the clock drops the one that does not fit. */
-    double slots = ceil(flip_s * refresh_hz - 1e-6);
-    return slots / flip_s;
+    return (double)fg_slots(flip_s, refresh_hz) / flip_s;
 }
 
 uint64_t fg_next_due(uint64_t due, uint64_t now, uint64_t step_ns) {
@@ -684,7 +697,7 @@ double fg_clock_phase(uint64_t since_real_ns, uint64_t step_ns, uint64_t flip_ns
      * from now, so the last in-between frame of a game frame lands close
      * to 1 (a quarter-interval margin here dropped it at every refresh). */
     (void)step_ns;
-    if (t >= 0.985) return 0.0;
+    if (t >= FG_PHASE_LAST) return 0.0;
     return t;
 }
 
@@ -803,6 +816,7 @@ int fg_ceiling_get(FgCeiling *c, double now) {
  * little (at most max_px per corner: a tachometer needle, a sliding panel)
  * are placed at fraction u of the way from L to O. Anything that changed
  * what it draws (digits) or jumped stays as L drew it. */
+#define FG_HUD_WINDOW 8u
 void fg_hud_lerp(const FgPrimList *L, const FgPrimList *O, double u, float *x, float *y,
                  float max_px) {
     if (!L || !O || u <= 0.0 || u >= 1.0) return;
@@ -810,14 +824,17 @@ void fg_hud_lerp(const FgPrimList *L, const FgPrimList *O, double u, float *x, f
     for (uint32_t j = 0; j < L->n; j++) {
         const FgPrim *a = &L->v[j];
         if (a->vid[0] || a->vid[1] || a->vid[2]) continue;
+        /* The match is searched among the next FG_HUD_WINDOW 2D triangles of
+         * O (a match on the last of them counts). */
         uint32_t m = o, seen = 0;
-        for (; m < O->n && seen < 8u; m++) {
+        int found = 0;
+        for (; m < O->n && seen < FG_HUD_WINDOW; m++) {
             const FgPrim *b = &O->v[m];
             if (b->vid[0] || b->vid[1] || b->vid[2]) continue;
             seen++;
-            if (b->key == a->key && b->view == a->view) break;
+            if (b->key == a->key && b->view == a->view) { found = 1; break; }
         }
-        if (m >= O->n || seen >= 8u) continue;
+        if (!found) continue;
         const FgPrim *b = &O->v[m];
         o = m + 1;
         int ok = 1, moved = 0;

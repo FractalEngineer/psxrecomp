@@ -354,6 +354,25 @@ static void test_pipeline_user_settings() {
     check(back.has_frame_generation && back.frame_generation, "frame_generation round-trips");
     fs::remove(p);
 
+    /* [video] vsync: every mode parses from settings.toml and a launcher
+     * save writes back the same mode (vrr = 2 included). */
+    const struct { const char *text; int value; } vs[] = {
+        { "on", 1 }, { "immediate", 0 }, { "adaptive", -1 }, { "vrr", 2 } };
+    for (const auto &m : vs) {
+        p = write_temp("psxrecomp_vsync_read.toml",
+                       std::string("[video]\nvsync = \"") + m.text + "\"\n");
+        auto vr = PSXRecompV4::load_user_settings(p);
+        check(vr.has_vsync && vr.vsync == m.value, "settings vsync parses every mode");
+        fs::remove(p);
+        PSXRecompV4::UserSettings vo;
+        vo.has_vsync = true; vo.vsync = m.value;
+        p = fs::temp_directory_path() / "psxrecomp_vsync_rt.toml";
+        check(PSXRecompV4::save_user_settings(p, vo), "save_user_settings writes vsync");
+        auto vb = PSXRecompV4::load_user_settings(p);
+        check(vb.has_vsync && vb.vsync == m.value, "settings vsync round-trips every mode");
+        fs::remove(p);
+    }
+
     PSXRecompV4::UserSettings none;
     p = fs::temp_directory_path() / "psxrecomp_pipe_none.toml";
     check(PSXRecompV4::save_user_settings(p, none), "save_user_settings writes defaults");

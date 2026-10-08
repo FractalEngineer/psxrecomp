@@ -2893,6 +2893,7 @@ UserSettings load_user_settings(const fs::path& path) {
             if      (m == "on"  || m == "vsync")    { s.vsync = 1;  s.has_vsync = true; }
             else if (m == "off" || m == "immediate"){ s.vsync = 0;  s.has_vsync = true; }
             else if (m == "adaptive")               { s.vsync = -1; s.has_vsync = true; }
+            else if (m == "vrr")                    { s.vsync = 2;  s.has_vsync = true; }
         });
         if (v.contains("frame_interpolation")) try_get([&]{
             s.frame_interpolation = toml::find<bool>(v, "frame_interpolation");
@@ -3252,7 +3253,8 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     if (s.has_frame_generation)
         f << "frame_generation = " << (s.frame_generation ? "true" : "false") << "\n";
     if (s.has_vsync)
-        f << "vsync             = \"" << (s.vsync == 0 ? "immediate" : s.vsync < 0 ? "adaptive" : "on") << "\"\n";
+        f << "vsync             = \"" << (s.vsync == 0 ? "immediate" : s.vsync < 0 ? "adaptive"
+                                         : s.vsync == 2 ? "vrr" : "on") << "\"\n";
     if (s.has_frame_interpolation)
         f << "frame_interpolation = " << (s.frame_interpolation ? "true" : "false") << "\n";
     if (s.has_frame_interpolation_fps)
