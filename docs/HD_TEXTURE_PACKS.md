@@ -81,12 +81,16 @@ with a maximum of 8192 pixels per side, 64 MiB encoded, and 64 MiB decoded RGBA.
 Unsupported identities, configuration features, or images fall back to the
 original artwork. A savestate load or rewind restages VRAM; Beetle-keyed
 upload rectangles already seen in the session are then re-admitted when their
-restored words still hash to the same key. Saving a state also writes the Beetle-format upload
+restored words still hash to the same key. That re-hash is bounded: at most
+256 rectangles covering at most one VRAM's worth of words (about 1 MiB of
+CRC per load or rewind step, oldest dropped first). Saving a state also writes the Beetle-format upload
 residency beside the slot (`*.hdres`, host metadata only, never in the `.pst`).
 Loading that slot restores it when the restored VRAM is exactly the VRAM it
-was saved with, so a HUD uploaded once per race keeps its replacement. Other
-loads (no sidecar, a different pack, DuckStation `texupload` names, rewind or
-netplay states) need fresh texture uploads from the game before upload-based
+was saved with and the same pack is active (the sidecar carries a CRC of the
+whole native VRAM and the pack's identity, a hash of its replacement keys),
+so a HUD uploaded once per race keeps its replacement. Other loads (no
+sidecar, a different pack, DuckStation `texupload` names, rewind or netplay
+states) need fresh texture uploads from the game before upload-based
 replacements match again; page-based matching remains available. See [DuckStation texture format notes](DUCKSTATION_TEXTURE_FORMAT.md)
 for the exact supported filenames, hashing, alpha behavior, and limitations.
 

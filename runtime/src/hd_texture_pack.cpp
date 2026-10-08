@@ -649,6 +649,7 @@ struct HdTexturePack {
     std::string replacement_root;
     std::unordered_map<uint64_t, EntryRecord> entries;
     std::unordered_set<uint32_t> texture_hashes; /* any palette */
+    uint32_t identity = 0;                       /* hd_texture_pack_identity */
     size_t replacement_file_count = 0;
     size_t ambiguous_key_count = 0;
     size_t logical_mapping_count = 0;
@@ -876,6 +877,19 @@ int hd_texture_pack_create(const char* explicit_root,
             pack->entries.emplace(key, std::move(record));
             pack->texture_hashes.insert(static_cast<uint32_t>(key >> 32));
         }
+        {
+            /* Identity: FNV-1a over the sorted replacement keys (texture and
+             * palette hash), so two loads of the same pack agree wherever it
+             * lives, and a pack with other keys differs. */
+            std::vector<uint64_t> keys;
+            keys.reserve(pack->entries.size());
+            for (const auto& entry : pack->entries) keys.push_back(entry.first);
+            std::sort(keys.begin(), keys.end());
+            uint32_t h = 2166136261u;
+            for (const uint64_t key : keys)
+                for (int i = 0; i < 8; ++i) { h ^= uint8_t(key >> (8 * i)); h *= 16777619u; }
+            pack->identity = h ? h : 1u;
+        }
 
         *out_pack = pack.release();
         return 1;
@@ -913,6 +927,10 @@ int hd_texture_pack_lookup(const HdTexturePack* pack,
     if (found->second.ambiguous) return HD_TEXTURE_LOOKUP_AMBIGUOUS;
     fill_entry(found->second, out_entry);
     return HD_TEXTURE_LOOKUP_FOUND;
+}
+
+uint32_t hd_texture_pack_identity(const HdTexturePack* pack) {
+    return pack ? pack->identity : 0u;
 }
 
 int hd_texture_pack_has_texture(const HdTexturePack* pack, uint32_t texture_hash) {

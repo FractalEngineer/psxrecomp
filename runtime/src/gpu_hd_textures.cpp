@@ -389,7 +389,8 @@ extern "C" void gpu_hd_textures_end_copy(void) {
 }
 namespace {
 constexpr uint32_t kResidencyMagic = 0x52444850u; /* "PHDR" */
-constexpr uint32_t kResidencyVersion = 1u;
+constexpr uint32_t kResidencyVersion = 2u;   /* 2: + the pack's identity */
+constexpr size_t kResidencyHeader = 16u;
 void put32(uint8_t* at, uint32_t v) { for (int i = 0; i < 4; ++i) at[i] = uint8_t(v >> (8 * i)); }
 uint32_t get32(const uint8_t* at) { uint32_t v = 0; for (int i = 0; i < 4; ++i) v |= uint32_t(at[i]) << (8 * i); return v; }
 }
@@ -399,21 +400,25 @@ extern "C" int gpu_hd_textures_residency_save(uint8_t** data, size_t* size) {
     if (!data || !size || !session || !session->beetle || !native_vram) return 0;
     uint8_t* tracking = nullptr; size_t tracking_size = 0;
     if (!hd_texture_pack_tracking_state_save(session->beetle, &tracking, &tracking_size)) return 0;
-    uint8_t* out = static_cast<uint8_t*>(std::malloc(12 + tracking_size));
+    uint8_t* out = static_cast<uint8_t*>(std::malloc(kResidencyHeader + tracking_size));
     if (!out) { std::free(tracking); return 0; }
     put32(out, kResidencyMagic); put32(out + 4, kResidencyVersion);
     put32(out + 8, hd_texture_crc32_words_le(native_vram, kVramWords));
-    if (tracking_size) std::memcpy(out + 12, tracking, tracking_size);
+    put32(out + 12, hd_texture_pack_identity(session->beetle));
+    if (tracking_size) std::memcpy(out + kResidencyHeader, tracking, tracking_size);
     std::free(tracking);
-    *data = out; *size = 12 + tracking_size;
+    *data = out; *size = kResidencyHeader + tracking_size;
     return 1;
 }
 extern "C" int gpu_hd_textures_residency_load(const uint8_t* data, size_t size) {
-    if (!data || size < 12 || !session || !session->beetle || !native_vram) return 0;
+    if (!data || size < kResidencyHeader || !session || !session->beetle || !native_vram) return 0;
     if (get32(data) != kResidencyMagic || get32(data + 4) != kResidencyVersion) return 0;
+    /* Saved with another pack: its residency names other uploads. */
+    if (get32(data + 12) != hd_texture_pack_identity(session->beetle)) return 0;
     if (get32(data + 8) != hd_texture_crc32_words_le(native_vram, kVramWords)) return 0;
-    if (!hd_texture_pack_tracking_state_check(data + 12, size - 12)) return 0;
-    return hd_texture_pack_tracking_state_load(session->beetle, data + 12, size - 12);
+    if (!hd_texture_pack_tracking_state_check(data + kResidencyHeader, size - kResidencyHeader)) return 0;
+    return hd_texture_pack_tracking_state_load(session->beetle, data + kResidencyHeader,
+                                               size - kResidencyHeader);
 }
 extern "C" void gpu_hd_textures_invalidate(int x, int y, int width, int height) {
     if (!session || width < 1 || height < 1) return;
@@ -443,8 +448,18 @@ extern "C" void gpu_hd_textures_track_upload(int x, int y, int width, int height
         const std::array<uint16_t, 4> rect{uint16_t(x & 1023), uint16_t(y & 511),
                                            uint16_t(width), uint16_t(height)};
         if (std::find(session->learned.begin(), session->learned.end(), rect) == session->learned.end()) {
-            if (session->learned.size() >= 256) session->learned.erase(session->learned.begin());
+            /* Bounded by count and by area: a restage re-hashes at most one
+             * VRAM's worth of words (~1 MiB of CRC), however large or many
+             * the learned uploads (oldest dropped first). */
             session->learned.push_back(rect);
+            size_t area = 0;
+            for (const auto& r : session->learned) area += size_t(r[2]) * r[3];
+            while (session->learned.size() > 1 &&
+                   (session->learned.size() > 256 || area > kVramWords)) {
+                const auto& r = session->learned.front();
+                area -= size_t(r[2]) * r[3];
+                session->learned.erase(session->learned.begin());
+            }
         }
     }
 }
