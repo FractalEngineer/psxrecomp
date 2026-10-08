@@ -377,6 +377,12 @@ int  gl_renderer_frame_generation_method(void);
 typedef enum { GL_FG_HOLD_STEP_DOWN = 0, GL_FG_HOLD_OVER_BUDGET = 1 } GlFgHold;
 void gl_renderer_frame_gen_hold(GlFgHold kind, double secs);
 int  gl_renderer_frame_gen_json(char *out, int cap);
+/* Smooth motion's running totals (racy reads, for rate readouts). */
+void gl_renderer_frame_gen_counts(uint64_t *generated, uint64_t *real_presents);
+/* Generated frames so far, how many of them were timed, and the timed ones'
+ * summed cost (ns, GPU time or CPU wall, the larger): dynamic resolution
+ * counts what Smooth motion actually spent in its load. */
+void gl_renderer_frame_gen_costs(uint64_t *generated, uint64_t *measured, uint64_t *cost_ns);
 /* Host time the renderer spent, as running totals in performance-counter
  * ticks (only kept while dynamic resolution is on): waits for the frame
  * blend's next present, render passes, blend presents' own work, and time

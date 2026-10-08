@@ -137,8 +137,8 @@ void fg_cam_place(const FgPrimList *newer, FgCamFit *fit, const FgVert *verts,
  *   gen_cost_s   the cost of one generated frame, 0 when not yet measured
  *   budget       share of the interval the real and generated work may use
  * Returns 0..slots-1, where slots = round(flip_s * refresh_hz); an unknown
- * generation cost allows one frame while the real cost leaves half the
- * interval, so the cost gets measured. */
+ * generation cost allows one frame while the real cost leaves a third of the
+ * budget, so the cost gets measured. */
 /* Any-rate scheduling. fg_step_s: the interval between in-between frames
  * of a game frame `flip_s` long with `n` of them on a `refresh_hz` display
  * (one display interval; an even split when the refresh is unknown).

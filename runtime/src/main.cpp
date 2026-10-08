@@ -1334,6 +1334,10 @@ struct DynresHost {
     DynrtController rt{};
     GlRthCosts last_costs{};
     uint64_t last_bp_ns = 0;
+    /* Smooth motion's generated frames (dynres_tick_rt). */
+    uint64_t last_gen = 0, last_gen_meas = 0, last_gen_cost_ns = 0;
+    double gen_mean_s = 0.0, gen_pending_s = 0.0;
+    double rt_acc_real_s = 0.0, rt_acc_gen_s = 0.0, rt_win_gen_frac = 0.0;
     unsigned long long rt_last_windows = 0;
     bool rt_trace_header = false;
     double rt_win_cpu_ms = 0.0, rt_win_gpu_ms = 0.0;   /* last window's means */
@@ -4391,16 +4395,23 @@ static void runtime_perf_section_end(uint64_t start, uint64_t *total) {
  * maintained in production, so this only needs to expose it.
  *
  * Opt-in via PSX_FRAME_REPORT_MS (milliseconds between lines). When unset this
- * is one branch on a cached int per vblank. */
+ * is one branch on a cached int per vblank. Each line also carries the
+ * emulation thread's busy share (the window less its pacer waits and its
+ * waits on the render queue), the render thread's busy share, the dynamic
+ * resolution level and Smooth motion's generated / real presents per second. */
+static uint64_t g_frame_report_wait_ticks = 0;   /* offline pacer waits */
 static void frame_report_tick(uint64_t frames) {
     static int interval_ms = -1;
     static uint64_t first_ticks = 0, last_ticks = 0, last_frames = 0;
+    static uint64_t last_pc = 0, last_wait = 0, last_q_ns = 0, last_busy_ns = 0;
+    static uint64_t last_gen = 0, last_real = 0;
     if (interval_ms < 0) {
         const char *e = std::getenv("PSX_FRAME_REPORT_MS");
         interval_ms = (e && e[0]) ? std::atoi(e) : 0;
         if (interval_ms < 0) interval_ms = 0;
         first_ticks = last_ticks = SDL_GetTicks();
         last_frames = frames;
+        last_pc = SDL_GetPerformanceCounter();
         if (interval_ms)
             std::fprintf(stdout, "psxrecomp: frame report every %d ms\n", interval_ms);
     }
@@ -4409,15 +4420,40 @@ static void frame_report_tick(uint64_t frames) {
     if (now - last_ticks < (uint64_t)interval_ms) return;
     const double win_s = (double)(now - last_ticks) / 1000.0;
     const double all_s = (double)(now - first_ticks) / 1000.0;
+    const uint64_t pc = SDL_GetPerformanceCounter();
+    const double pc_s = (double)(pc - last_pc) / (double)SDL_GetPerformanceFrequency();
+    RtStats rs;
+    rt_get_stats(&rs);
+    const uint64_t q_ns = rs.backpressure_ns + rs.ring_full_ns + rs.acquire_ns;
+    const double wait_s = (double)(g_frame_report_wait_ticks - last_wait) /
+                              (double)SDL_GetPerformanceFrequency() +
+                          (double)(q_ns - last_q_ns) * 1e-9;
+    const double emu_busy = pc_s > 0.0 ? 100.0 * (1.0 - wait_s / pc_s) : 0.0;
+    const double rt_busy = (pc_s > 0.0 && rs.running)
+        ? 100.0 * (double)(rs.render_busy_ns - last_busy_ns) * 1e-9 / pc_s : 0.0;
+    uint64_t gen = 0, real = 0;
+    gl_renderer_frame_gen_counts(&gen, &real);
+    GlDynresStats ds;
+    gl_renderer_dynres_stats(&ds);
     std::fprintf(stdout,
-                 "psxrecomp: frames=%llu elapsed_ms=%llu fps=%.1f avg_fps=%.1f\n",
+                 "psxrecomp: frames=%llu elapsed_ms=%llu fps=%.1f avg_fps=%.1f "
+                 "emu_busy=%.1f%% render_busy=%.1f%% dynres=%d load=%.2f gen_fps=%.1f real_fps=%.1f\n",
                  (unsigned long long)frames,
                  (unsigned long long)(now - first_ticks),
                  win_s > 0.0 ? (double)(frames - last_frames) / win_s : 0.0,
-                 all_s > 0.0 ? (double)frames / all_s : 0.0);
+                 all_s > 0.0 ? (double)frames / all_s : 0.0,
+                 emu_busy, rt_busy, ds.level, g_dynres.rt.last_load,
+                 pc_s > 0.0 ? (double)(gen - last_gen) / pc_s : 0.0,
+                 pc_s > 0.0 ? (double)(real - last_real) / pc_s : 0.0);
     std::fflush(stdout);
     last_ticks = now;
     last_frames = frames;
+    last_pc = pc;
+    last_wait = g_frame_report_wait_ticks;
+    last_q_ns = q_ns;
+    last_busy_ns = rs.render_busy_ns;
+    last_gen = gen;
+    last_real = real;
 }
 
 static void runtime_perf_diag_tick() {
@@ -6978,6 +7014,29 @@ static void sample_pad_into_sio(int override) {
     }
 }
 
+/* Measurement aid, release builds included: PSX_HOLD_PADS="p1[,p2]" holds
+ * those raw pad words (active low, e.g. 0xBFFF = Cross) on ports 1 and 2
+ * after every live sample, so a headless timing run can drive a race
+ * without the debug server. Unset: one cached branch per sample. */
+static void env_pad_hold_apply(void) {
+    static int parsed = 0, n = 0;
+    static uint16_t w[2] = {0xFFFFu, 0xFFFFu};
+    if (!parsed) {
+        parsed = 1;
+        if (const char *e = std::getenv("PSX_HOLD_PADS")) {
+            unsigned a = 0xFFFFu, b = 0xFFFFu;
+            n = std::sscanf(e, "%x,%x", &a, &b);
+            if (n < 0) n = 0;
+            w[0] = (uint16_t)a; w[1] = (uint16_t)b;
+            if (n) std::fprintf(stdout, "psxrecomp: PSX_HOLD_PADS %d port(s)\n", n);
+        }
+    }
+    for (int i = 0; i < n && i < 2; i++) {
+        if (i == 1) sio_set_pad_connected(1, 1);
+        sio_set_pad_state_slot(i, w[i]);
+    }
+}
+
 static void sample_headless_pad_into_sio(int override) {
     if (override < 0) {
         uint16_t mash = 0xFFFFu;
@@ -8372,6 +8431,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             else
                 sample_pad_into_sio(override);
             apply_input_override_port2(override_p2);
+            env_pad_hold_apply();
         }
         /* Offline vblank boundary: record/replay/compare (PSX_RB_SELFCHECK).
          * Defer opening a window while multitap arming is still pending —
@@ -8676,9 +8736,11 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     if (!psx_netplay_active() && !psx_selfcheck_resim_active()) {
         uint64_t perf_start = runtime_perf_section_begin();
         if (!manual_turbo_active && !turbo_load_paced && present_should_wall_pace()) {
-            const uint64_t dyn_t0 = g_dynres.active ? SDL_GetPerformanceCounter() : 0;
+            const uint64_t dyn_t0 = SDL_GetPerformanceCounter();
             frame_pacer_wait(&s_frame_pacer, g_frame_period_ms);
-            if (dyn_t0) g_dynres.pacer_ticks += SDL_GetPerformanceCounter() - dyn_t0;
+            const uint64_t waited = SDL_GetPerformanceCounter() - dyn_t0;
+            if (g_dynres.active) g_dynres.pacer_ticks += waited;
+            g_frame_report_wait_ticks += waited;
         }
         runtime_perf_section_end(perf_start, &g_runtime_perf.pacer_ticks);
         latency_ring_mark(LAT_PACED);
@@ -8703,6 +8765,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             }
             sample_pad_into_sio(override);
             apply_input_override_port2(override_p2);
+            env_pad_hold_apply();
             latency_ring_restamp_input();
         }
     }
@@ -9598,26 +9661,50 @@ static void dynres_tick_rt(double now_s, double wall, double period, int held,
     g_dynres.rt_acc_gpu_frames += co.gpu_frames - c0.gpu_frames;
     g_dynres.last_costs = co;
     g_dynres.last_bp_ns = bp_ns;
-    /* Smooth motion's in-between frames share the game frame with it. */
-    const double share = gl_renderer_frame_gen_real_share();
-    /* Redraw: the real frames' budget is their share of the period.
-     * Reprojection: as load, the real frames' cost against their share (the
-     * period itself stays, so guest-bound detection still compares it with
-     * the wall interval). */
-    const bool rp = gl_renderer_frame_generation_method() == GL_FG_METHOD_REPROJECTION;
-    DynrtSample smp = rp ? DynrtSample{ period, wall, frames, share > 0.0 ? cost / share : cost, bp, held }
-                         : DynrtSample{ period * share, wall, frames, cost, bp, held };
+    /* Smooth motion: the in-between frames it actually drew, at their
+     * measured cost (timed ones' mean, applied to every one drawn), are
+     * render work like the real frames'. Counted into the load instead of a
+     * reserve that assumed a full panel rate of them at an estimated cost:
+     * with room, dynamic resolution sees the room and steps up; when they
+     * crowd the real frames, the load says so. A sample whose real costs have
+     * not arrived carries its share forward to the next one that has. */
+    {
+        uint64_t gen = 0, meas = 0, gcost = 0;
+        gl_renderer_frame_gen_costs(&gen, &meas, &gcost);
+        if (meas > g_dynres.last_gen_meas)
+            g_dynres.gen_mean_s = (double)(gcost - g_dynres.last_gen_cost_ns) * 1e-9 /
+                                  (double)(meas - g_dynres.last_gen_meas);
+        if (gen >= g_dynres.last_gen)
+            g_dynres.gen_pending_s += (double)(gen - g_dynres.last_gen) * g_dynres.gen_mean_s;
+        g_dynres.last_gen = gen;
+        g_dynres.last_gen_meas = meas;
+        g_dynres.last_gen_cost_ns = gcost;
+    }
+    double gen_s = 0.0;
+    if (frames > 0 && !held) { gen_s = g_dynres.gen_pending_s; g_dynres.gen_pending_s = 0.0; }
+    if (held) g_dynres.gen_pending_s = 0.0;
+    DynrtSample smp{ period, wall, frames, cost + gen_s, bp, held };
     const int prev_level = c.level;
     const int level = dynrt_sample(&c, now_s, &smp);
+    if (frames > 0 && !held) {
+        g_dynres.rt_acc_real_s += cost;
+        g_dynres.rt_acc_gen_s += gen_s;
+    }
     /* Frame generation only spends surplus: not while the real frames are
-     * over budget (renewed every over-budget sample) and briefly after a
-     * step down, while the new level's first frames settle. */
+     * over budget on their own (renewed every over-budget sample; the
+     * in-between frames' part of the last window's load does not count, or
+     * they would switch themselves off) and briefly after a step down, while
+     * the new level's first frames settle. */
     if (level < prev_level)
         gl_renderer_frame_gen_hold(GL_FG_HOLD_STEP_DOWN, 0.25);
-    else if (c.over_streak > 0)
+    else if (c.over_streak > 0 &&
+             c.last_load * (1.0 - g_dynres.rt_win_gen_frac) >= 1.0 - c.p.margin)
         gl_renderer_frame_gen_hold(GL_FG_HOLD_OVER_BUDGET, 0.1);
     if (c.windows != g_dynres.rt_last_windows) {
         g_dynres.rt_last_windows = c.windows;
+        const double all = g_dynres.rt_acc_real_s + g_dynres.rt_acc_gen_s;
+        g_dynres.rt_win_gen_frac = all > 0.0 ? g_dynres.rt_acc_gen_s / all : 0.0;
+        g_dynres.rt_acc_real_s = g_dynres.rt_acc_gen_s = 0.0;
         g_dynres.rt_win_cpu_ms = g_dynres.rt_acc_frames
             ? g_dynres.rt_acc_cpu / (double)g_dynres.rt_acc_frames : 0.0;
         g_dynres.rt_win_gpu_ms = g_dynres.rt_acc_gpu_frames

@@ -103,15 +103,21 @@ has measured time to spare.
   generated frame (CPU, GPU via `GL_TIME_ELAPSED`, plus a swap). On macOS a
   real frame's `TIME_ELAPSED` span reads close to the whole interval (it
   counts the GPU waiting for records), so it is not used here; GPU overload
-  shows as backpressure. The measured frame cost dynamic resolution uses
-  excludes generation (its query is paused, segments summed). With the
+  shows as backpressure. The real frames' measured cost excludes generation
+  (its query is paused, segments summed); dynamic resolution adds the
+  generated frames actually drawn, each at the mean measured cost of the
+  timed ones, to its load. So it steps up while the render thread has room
+  for both, and the in-between frames count against the budget once they
+  crowd the real ones (no reserve assumed for frames not drawn). With the
   present thread (`[video] present_thread`, docs/RENDER_THREAD.md) a swap
   here is the hand-off to it, and its cost is the time spent waiting for a
   free slot, not the compositor's round trip.
 - **Breaker.** Off for 3 s (doubling to 24 s on repeats within 10 s) after
   the queue backed up (the guest waited), the render thread fell two frames
   behind, or a guest frame took over 1.5 intervals. While dynamic resolution
-  is over budget or stepping down, generation pauses (1 s, no escalation).
+  is over budget on the real frames alone (the last window's load less the
+  generated frames' part) or stepping down, generation pauses (no
+  escalation).
   One frame behind just shows the waiting real frame at once.
 - **Sync points** show the waiting real frame and restart the lists at the
   next flip.

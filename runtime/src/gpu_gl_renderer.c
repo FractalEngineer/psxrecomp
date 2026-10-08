@@ -10865,6 +10865,9 @@ static int       s_fg_partial = 0;            /* the capturing list is incomplet
 static GLuint    s_fg_q[4]; static int s_fg_qok = -1; static unsigned s_fg_qh = 0, s_fg_qt = 0;
 static uint64_t  s_fg_q_cpu[4];
 /* Statistics (render thread writes; the debug server reads, racy by design). */
+/* Measured generated frames (GPU time or CPU wall, the larger) for dynamic
+ * resolution's load: their summed cost and how many were measured. */
+static _Atomic uint64_t s_fg_gen_cost_ns = 0, s_fg_gen_measured = 0;
 static uint64_t  s_fg_generated = 0, s_fg_real_presents = 0, s_fg_flips = 0,
                  s_fg_flushed = 0, s_fg_skipped_plan = 0, s_fg_dups = 0;
 static int       s_fg_last_n = 0, s_fg_last_slots = 0;
@@ -12353,6 +12356,8 @@ static void fg_gen_cost_poll(void) {
         double c = (double)(ns > s_fg_q_cpu[i] ? ns : s_fg_q_cpu[i]) * 1e-9;
         fg_cost_add(fg_cost(), c, s_fg_fit_s);
         atomic_store(&s_fg_cost_ema_pub, fg_cost()->ema);
+        atomic_fetch_add(&s_fg_gen_cost_ns, (uint64_t)(c * 1e9));
+        atomic_fetch_add(&s_fg_gen_measured, 1);
         s_fg_gen_gpu_ms = (double)ns * 1e-6;
         s_fg_gen_cpu_ms = (double)s_fg_q_cpu[i] * 1e-6;
         s_fg_qt++;
@@ -12835,6 +12840,17 @@ static void fg_note_guest_frame(void) {
     if (ghz <= 1.0) return;
     if (fg_pace_note(&s_fg_pace, (double)rt_now_ns() * 1e-9, 1.0 / ghz, 2.0 / ghz))
         atomic_store(&s_fg_late, 1);
+}
+
+void gl_renderer_frame_gen_counts(uint64_t *generated, uint64_t *real_presents) {
+    if (generated) *generated = s_fg_generated;
+    if (real_presents) *real_presents = s_fg_real_presents;
+}
+
+void gl_renderer_frame_gen_costs(uint64_t *generated, uint64_t *measured, uint64_t *cost_ns) {
+    if (generated) *generated = s_fg_generated;
+    if (measured) *measured = atomic_load(&s_fg_gen_measured);
+    if (cost_ns) *cost_ns = atomic_load(&s_fg_gen_cost_ns);
 }
 
 int gl_renderer_frame_gen_json(char *out, int cap) {
