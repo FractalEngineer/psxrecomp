@@ -9296,6 +9296,18 @@ static void handle_savestate_status(int id, const char *json)
     send_fmt("{\"id\":%d,\"ok\":true,%s}", id, status);
 }
 
+static void handle_snapshot_status(int id, const char *json)
+{
+    (void)json;
+    extern int psx_mod_function_entry_active(void);
+    const uint32_t pc = psx_irq_resume_context_snapshot_pc();
+    send_fmt("{\"id\":%d,\"ok\":true,\"callback_active\":%s,"
+             "\"host_call_depth\":%u,\"site\":%d,\"pc\":\"0x%08X\",\"safe\":%s}",
+             id, psx_mod_function_entry_active() ? "true" : "false",
+             psx_snapshot_host_call_depth(), psx_irq_resume_context_snapshot_site(),
+             pc, psx_irq_resume_context_snapshot_safe_at(pc) ? "true" : "false");
+}
+
 static void handle_turbo(int id, const char *json)
 {
     int enabled = json_get_int(json, "enabled", -1);
@@ -15721,6 +15733,7 @@ static const CmdEntry s_commands[] = {
     { "input_route_status",handle_input_route_status },
     { "savestate",         handle_savestate },
     { "savestate_status",  handle_savestate_status },
+    { "snapshot_status",   handle_snapshot_status },
     { "turbo",             handle_turbo },
     { "turbo_state",       handle_turbo_state },
     { "pause",             handle_pause },

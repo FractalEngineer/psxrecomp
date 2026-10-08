@@ -11,6 +11,7 @@
 #include "cpu_state.h"
 
 #include <array>
+#include <csetjmp>
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -166,6 +167,7 @@ static int disabled_entry_hits;
 static int unselected_entry_hits;
 static uint32_t active_entry_last;
 static int entry_test_mode, nested_result;
+static std::jmp_buf callback_escape;
 static uint32_t nested_pc;
 static void test_active_entry(CPUState* cpu, uint32_t address) {
     active_entry_hits++;
@@ -190,6 +192,22 @@ static void test_active_entry(CPUState* cpu, uint32_t address) {
         interrupted_entry_cpu = nullptr;
         if (!psx_mod_finish_function(cpu)) failures++;
         cpu->gpr[2] = 0x87654321u;
+    } else if (entry_test_mode == 5) {
+        /* Guest scheduling/RFE can abandon the callback's C++ scope. */
+        std::longjmp(callback_escape, 1);
+    } else if (entry_test_mode == 6) {
+        if (!psx_mod_finish_function(cpu)) failures++;
+        ModFunctionEntryContext interrupted{};
+        mod_runtime_function_entry_context_save(&interrupted);
+        if (setjmp(callback_escape) == 0) {
+            CPUState nested{};
+            entry_test_mode = 5;
+            psx_mod_function_entry(&nested, address);
+            failures++; /* the nested callback must escape */
+        }
+        mod_runtime_function_entry_context_restore(&interrupted);
+        if (!psx_mod_function_entry_active() || !psx_mod_finish_function(cpu)) failures++;
+        entry_test_mode = 6;
     }
 }
 static void test_disabled_entry(CPUState*, uint32_t) { disabled_entry_hits++; }
@@ -781,6 +799,22 @@ int main() {
     check(psx_mod_function_entry(&entry_cpu, 0x80003000u) == 1 &&
               entry_cpu.pc == 0x80005000u && entry_cpu.gpr[2] == 0x87654321u,
           "entry completion survives VBlank callbacks during a native call");
+    entry_test_mode = 0;
+
+    entry_test_mode = 5;
+    if (setjmp(callback_escape) == 0) {
+        psx_mod_function_entry(&entry_cpu, 0x80003000u);
+        check(false, "callback must escape without its native cleanup");
+    }
+    check(psx_mod_function_entry_active(), "escape reproduces the stranded capture gate");
+    const ModFunctionEntryContext no_callback{};
+    mod_runtime_function_entry_context_restore(&no_callback);
+    check(!psx_mod_function_entry_active() && !psx_mod_finish_function(&entry_cpu),
+          "scheduler landing releases the gate and clears abandoned completion ownership");
+    entry_test_mode = 6;
+    check(psx_mod_function_entry(&entry_cpu, 0x80003000u) == 1 &&
+              entry_cpu.pc == entry_cpu.gpr[31] && !psx_mod_function_entry_active(),
+          "nested exception landing preserves the live outer callback and completion");
     entry_test_mode = 0;
 
     entry_cpu.gpr[4] = 35u;

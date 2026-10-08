@@ -26,6 +26,7 @@
  */
 
 #include "interrupts.h"
+#include "mod_runtime.h"
 #include "psx_memory.h"
 #include "sio.h"
 #include "timers.h"
@@ -650,6 +651,8 @@ void psx_snapshot_host_call_end(void) {
     if (s_snapshot_host_call_depth) --s_snapshot_host_call_depth;
 }
 void psx_snapshot_host_call_reset(void) { s_snapshot_host_call_depth = 0; }
+unsigned psx_snapshot_host_call_depth(void) { return s_snapshot_host_call_depth; }
+void psx_snapshot_host_call_restore(unsigned depth) { s_snapshot_host_call_depth = depth; }
 
 uint32_t psx_irq_resume_context_snapshot_pc(void)
 {
@@ -1826,9 +1829,18 @@ irq_deliver_eval:
      * own live frame. */
     jmp_buf saved_exception_jmpbuf;
     memcpy(&saved_exception_jmpbuf, &exception_jmpbuf, sizeof(jmp_buf));
+    ModFunctionEntryContext saved_mod_callback;
+    mod_runtime_function_entry_context_save(&saved_mod_callback);
+    const unsigned saved_host_call_depth = psx_snapshot_host_call_depth();
     g_exc_setjmp_epoch++;   /* new setjmp frame armed (see decl above) */
     for (;;) {
         int jmp_val = setjmp(exception_jmpbuf);
+        if (jmp_val != 0) {
+            /* RFE/RestoreState can skip a callback and its guest-call adapter.
+             * Preserve callbacks below this handler; discard only its scopes. */
+            mod_runtime_function_entry_context_restore(&saved_mod_callback);
+            psx_snapshot_host_call_restore(saved_host_call_depth);
+        }
         if (jmp_val == 2) {
             /* RestoreState redirect: re-dispatch to cpu->pc.
              * GPRs were already set by RestoreState — do NOT restore.
