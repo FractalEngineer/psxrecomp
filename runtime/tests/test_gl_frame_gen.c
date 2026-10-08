@@ -179,6 +179,16 @@ static void textures(void) {
 }
 
 static int wide_mode;
+/* FG_PGXP=<features> (run_gl_frame_gen.py's PGXP pass): every triangle is a
+ * PGXP 3D triangle (sub-pixel positions and per-vertex GTE SZ, as gpu.c
+ * sends them while a PGXP renderer feature is on), packed so neighbours
+ * overlap with later triangles farther away: the depth buffer, not painter
+ * order, decides the overlaps, and SZ differs per vertex. "depth" turns the
+ * depth buffer on, "color" perspective-correct Gouraud colour, "seam" seam
+ * expansion (wide: half a native px); "none" draws the same scene without
+ * them. The generated frame at phase 1 must still
+ * equal the real one. */
+static int g_pgxp, g_pgxp_depth, g_pgxp_color, g_pgxp_seam;
 /* What gpu.c records for a GTE-projected triangle (gl_renderer_fg_source):
  * vertex identities and camera-space positions that project (H = z = 1000)
  * to the triangle's screen positions relative to its buffer. */
@@ -200,6 +210,14 @@ static void fixture_sources(int i, int bx, int x, int y) {
         pc[3 * k] = xs[k] - bx; pc[3 * k + 1] = ys[k]; pc[3 * k + 2] = 1000; h[k] = 1000;
     }
     gl_renderer_fg_source(id, pc, h, xs, ys);
+    if (g_pgxp) {
+        gr_set_precise_triangle(1, xs[0] * 65536, ys[0] * 65536, xs[1] * 65536, ys[1] * 65536,
+                                xs[2] * 65536, ys[2] * 65536);
+        /* Along a row each triangle is farther than all of its left neighbour
+         * (steps well beyond the 2% tolerance, below the 4096 clear threshold). */
+        const float z = 2000.0f + 2500.0f * (float)(i % 8) + 100.0f * (float)(i / 8);
+        gr_set_depth_triangle(1, z, z + 600.0f * (float)(1 + i % 3), z + 300.0f);
+    }
 }
 
 /* One game frame drawn into buffer bx. Positions move by whole pixels with
@@ -218,7 +236,7 @@ static void game_frame_part(int g, int bx, int part) {
     for (int i = part ? 20 : 0; i < (part ? 40 : 20); i++) {
         /* The camera pans one pixel per game frame (every triangle moves
          * alike); triangle 5 is an object moving on its own. */
-        int x = bx + 10 + (i % 8) * 36 + (i == 5 ? (g * 3) % 9 : g % 9) - 4;
+        int x = bx + 10 + (i % 8) * (g_pgxp ? 20 : 36) + (i == 5 ? (g * 3) % 9 : g % 9) - 4;
         int y = 12 + (i / 8) * 42 + (i == 5 ? g % 5 : 0);
         if (i == 0 && g % 5 == 0) { x = bx + 250 - (g * 37) % 200; y = 180; }
         fixture_sources(i, bx, x, y);
@@ -251,6 +269,13 @@ int main(int argc, char **argv) {
      * the next one (as R4 does), so a flip is not a list boundary. */
     int late = argc > 5 && !strcmp(argv[5], "late");
     pt_mode = argc > 6 && !strcmp(argv[6], "pt");
+    {
+        const char *e = getenv("FG_PGXP");
+        g_pgxp = e && *e;
+        g_pgxp_depth = g_pgxp && strstr(e, "depth") != NULL;
+        g_pgxp_color = g_pgxp && strstr(e, "color") != NULL;
+        g_pgxp_seam = g_pgxp && strstr(e, "seam") != NULL;
+    }
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "SKIP no video (%s)\n", SDL_GetError());
         return 77;
@@ -283,6 +308,13 @@ int main(int argc, char **argv) {
     textures();
     if (wide_mode) gr_wide_configure(426, 53);
     if (pt_mode) gl_renderer_set_present_thread(1, 3);
+    if (g_pgxp) {
+        gl_renderer_set_pgxp_depth(g_pgxp_depth);
+        gl_renderer_set_pgxp_color_perspective(g_pgxp_color);
+        gl_renderer_set_pgxp_seam(g_pgxp_seam ? 2 : 0);
+        check(gl_renderer_pgxp_render_wanted() == (g_pgxp_depth || g_pgxp_color || g_pgxp_seam),
+              "PGXP renderer features as asked");
+    }
     check(gl_renderer_render_thread_start(2) == 1, "render thread started");
     if (pt_mode) check(gl_renderer_present_thread_active(), "present thread started");
     if (fg) {
@@ -371,6 +403,13 @@ int main(int argc, char **argv) {
         check(n_gen > 0, "generated frames were presented");
     }
     check(glGetError() == GL_NO_ERROR, "GL error");
+    if (g_pgxp_depth) {
+        uint64_t dt = 0, dc = 0, st = 0;
+        gl_renderer_pgxp_render_stats(&dt, &dc, &st);
+        printf("pgxp depth_tris=%llu depth_clears=%llu seam_tris=%llu\n", (unsigned long long)dt,
+               (unsigned long long)dc, (unsigned long long)st);
+        check(dt > 0 && dc > 0, "PGXP depth tested the triangles");
+    }
     printf("real=%016llx\n", (unsigned long long)real_seq);
     printf("presents=%llu generated=%llu\n", (unsigned long long)n_real, (unsigned long long)n_gen);
     gl_renderer_shutdown();   /* stops the render and present threads: all shown */

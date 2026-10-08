@@ -1276,6 +1276,11 @@ static float         g_video_pgxp_tolerance        = 0.5f;
  * Defaults keep the historical behaviour. game.toml [video] only. */
 static int           g_video_pgxp_position_fallback   = 1;
 static int           g_video_pgxp_preserve_projection = 0;
+/* PGXP renderer features (G1.14); PSX_PGXP_DEPTH / _COLOR / _SEAM override. */
+static int           g_video_pgxp_depth_buffer = 0;
+static int           g_video_pgxp_color_correction = 0;
+static int           g_video_pgxp_seam = 0;
+static float         g_video_pgxp_depth_threshold = 4096.0f;
 /* [video] pgxp_mod_only (G1.12): the title ships PGXP through the
  * psx.enhancement.pgxp mod, which is then the one switch -- the [video]
  * geometry_correction / perspective_texturing / pgxp_cpu_mode values are not
@@ -15804,6 +15809,10 @@ int main(int argc, char** argv) {
             g_video_pgxp_preserve_projection =
                 gc.runtime.video_pgxp_preserve_projection ? 1 : 0;
             g_video_pgxp_mod_only = gc.runtime.video_pgxp_mod_only ? 1 : 0;
+            g_video_pgxp_depth_buffer = gc.runtime.video_pgxp_depth_buffer ? 1 : 0;
+            g_video_pgxp_color_correction = gc.runtime.video_pgxp_color_correction ? 1 : 0;
+            g_video_pgxp_seam = gc.runtime.video_pgxp_seam;
+            g_video_pgxp_depth_threshold = (float)gc.runtime.video_pgxp_depth_threshold;
             g_video_renderer   = gc.runtime.video_renderer;
             g_video_screen     = gc.runtime.video_screen_kind;
             g_video_scanlines  = gc.runtime.video_scanlines;
@@ -18165,6 +18174,15 @@ session_reboot:
     if (pgxp_in.env_geometry >= 0) g_video_geometry_correction = pgxp_in.env_geometry;
     if (pgxp_in.env_texture >= 0) g_video_perspective_texturing = pgxp_in.env_texture;
     if (pgxp_in.env_cpu_mode >= 0) g_video_pgxp_cpu_mode = pgxp_in.env_cpu_mode;
+    /* PGXP renderer features (G1.14): [video] keys, env overrides. */
+    if (const char* e = std::getenv("PSX_PGXP_DEPTH")) g_video_pgxp_depth_buffer = (*e && *e != '0');
+    if (const char* e = std::getenv("PSX_PGXP_COLOR")) g_video_pgxp_color_correction = (*e && *e != '0');
+    if (const char* e = std::getenv("PSX_PGXP_SEAM")) g_video_pgxp_seam = std::atoi(e);
+    gl_renderer_set_pgxp_depth(g_video_pgxp_depth_buffer);
+    gl_renderer_set_pgxp_color_perspective(g_video_pgxp_color_correction);
+    gl_renderer_set_pgxp_seam(g_video_pgxp_seam);
+    if (const char* e = std::getenv("PSX_PGXP_DEPTH_THRESHOLD")) g_video_pgxp_depth_threshold = (float)std::atof(e);
+    gl_renderer_set_pgxp_depth_threshold(g_video_pgxp_depth_threshold);
     /* [video] texture_window_batching A/B (same image, fewer GL draws). */
     if (const char* e = std::getenv("PSX_GL_TEXWIN_BATCH"))
         gl_renderer_set_texture_window_batching((*e && *e != '0') ? 1 : 0);

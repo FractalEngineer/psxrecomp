@@ -265,6 +265,22 @@ float gl_renderer_get_post_gamma(void);
 /* Select full native-wide mirror rendering instead of the centre-splice fast
  * path. Textured edge expansion needs the complete mirror surface. */
 void gl_renderer_set_wide_fast(int on);
+/* PGXP renderer features (docs/ENHANCEMENTS.md G1.14), all off by default:
+ * depth buffer for opaque 3D polygons, perspective-correct Gouraud colour,
+ * seam expansion (0 off, 1 = 1 output px above 1x, 2 = 0.5 native px),
+ * and the depth clear threshold in SZ units (DuckStation's default 4096). */
+/* Nonzero when a PGXP renderer feature is on: only then does gpu.c send
+ * gr_set_depth_triangle (no extra command per triangle otherwise). Any thread. */
+int  gl_renderer_pgxp_render_wanted(void);
+void gl_renderer_set_pgxp_depth(int on);
+int  gl_renderer_get_pgxp_depth(void);
+void gl_renderer_set_pgxp_color_perspective(int on);
+int  gl_renderer_get_pgxp_color_perspective(void);
+void gl_renderer_set_pgxp_seam(int mode);
+int  gl_renderer_get_pgxp_seam(void);
+void gl_renderer_set_pgxp_depth_threshold(float sz);
+void gl_renderer_pgxp_render_stats(uint64_t *depth_tris, uint64_t *depth_clears,
+                                   uint64_t *seam_tris);
 
 /* Internal-resolution scale state of the live GL context (0 before init). */
 typedef struct GlScaleInfo {
@@ -484,7 +500,7 @@ void gl_renderer_draw_projected_triangle(const PSXProjectedVertex vertices[3],
     int perspective);
 /* Cumulative textured-batch diagnostics: total, then flushes caused by
  * isolation, blend-mode, mask, filter, backdrop-gate, texture-window, capacity. */
-void gl_renderer_batch_diag(uint64_t out[8]);
+void gl_renderer_batch_diag(uint64_t out[9]);
 
 /* Texture-window batching ([video] texture_window_batching; default off).
  * On: textured prims with different GP0(E2h) texture windows share a batch

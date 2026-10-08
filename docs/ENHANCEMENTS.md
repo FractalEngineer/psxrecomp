@@ -1209,6 +1209,107 @@ pixel. LWL at byte 3 / LWR at byte 0 (and SWL / SWR likewise) move the whole
 word and copy its shadow. Result in the Fossil Field scene: every ground
 triangle dataflow-precise, `tri_mixed` from ~10% of triangles to 474 of 2.05M,
 seams gone (`test_pgxp` pins the sequence).
+### G1.14 — PGXP renderer: depth buffer, perspective-correct colour, seam expansion (2026-10-06)
+
+**Audit against the references.** Read from DuckStation's published source
+(`github.com/stenzek/duckstation`, CC BY-NC-ND 4.0, so behaviour only, no
+code: `src/core/cpu_pgxp.cpp`, `src/core/gpu.cpp` precise polygon path,
+`src/core/gpu_hw.cpp` `DrawPrecisePolygon` / `SetBatchDepthBuffer` /
+`CheckForDepthClear` / `IsPossibleSpritePolygon`, `src/core/gpu_hw_shadergen.cpp`
+vertex depth, `src/core/settings.cpp` defaults). GooseStation
+(`tehrzky/goosestation_nx`, GPL-2.0) is a patch set over a pinned DuckStation
+(skip engine, runahead PGXP state); its PGXP rendering is DuckStation's.
+
+| Feature | DuckStation | psxrecomp before | now |
+|---|---|---|---|
+| Geometry correction (sub-pixel vertices) | dataflow shadows, `GetPreciseVertex` | yes (G1.10/G1.11, hook flavor 99.9% on R4) | same |
+| Culling correction | `PGXPCulling`, default on | yes, mod option (G1.12) | same |
+| Texture correction | perspective UV via w | yes | same |
+| Colour correction | `PGXPColorCorrection`, default off | no (Gouraud affine) | **yes**, `pgxp_color_correction` |
+| Vertex cache | `PGXPVertexCache`, default off | position cache (`pgxp_position_fallback`) | same |
+| CPU mode | `PGXPCPU`, default off | `pgxp_cpu_mode` (tier-2) | same |
+| Preserve projection precision | `PGXPPreserveProjFP` | exact projection (G1.11) | same |
+| Tolerance | `PGXPTolerance` -1 | `pgxp_tolerance` | same |
+| Depth buffer | `PGXPDepthBuffer`: per-vertex w as depth, LEQUAL, only for polygons whose w differ (3D) and opaque unless `PGXPTransparentDepthTest`; cleared on drawing-area change and when average z rises by `PGXPDepthThreshold` (4096) | no | **yes**, `pgxp_depth_buffer` |
+| 2D polygons | sprite mode for non-3D precise polygons; `PGXPDisableOn2DPolygons` draws invalid-w polygons native | unproven vertices native per vertex; precise axis-aligned quads bypass the rect path (G1.11) | same; 2D never tests/writes depth |
+| T-junction / seam handling | none for polygons (line expansion only) | none | **seam expansion**, `pgxp_seam` |
+
+**Depth buffer.** gpu.c passes each triangle's SZ when all three vertices
+are dataflow-precise (`gr_set_depth_triangle`). The GL backend draws an
+opaque one with a LEQUAL test and write; depth is 1 - 2*256/(SZ+256) in NDC,
+linear in 1/z, so a plane's depth interpolates exactly in screen space. 2D,
+unproven, semi-transparent polygons, lines and rectangles neither test nor
+write. Depth mode is a batch key of both GL batches and rides in every
+high-resolution-window / native-wide replay command. Clears are a colourless
+depth-only draw through the flat batch (so every surface clears in painter
+order): before the first depth triangle after a drawing-area change or a
+fill, and when the average SZ rises by `pgxp_depth_threshold` (4096, as
+DuckStation). Two bugs found on R4 while landing it: a clear at window depth
+1.0 can be clipped by the far plane (now inside it), and R4's one-native-pixel
+line quads joined a depth batch and wrote near depth along every road and
+wall edge (lines now always break the batch). On R4 the threshold clears ~25
+times a frame; without it far beams vanish behind the previous view's depth.
+
+**Decals keep painter order.** A plain LEQUAL depth (DuckStation's choice,
+no bias) cut R4's lane markings into the road: they are separate polygons
+drawn after it, a hair off its plane once SZ is quantised per vertex. A 3D
+batch is now two passes: the colour pass tests with its depth pulled toward
+the camera by 2% of the distance (`PSX_PGXP_DEPTH_TOL`) and writes no depth;
+a colourless pass then writes the true depth. A later surface within the
+tolerance wins as in painter order; anything clearly behind stays occluded.
+Inside one batch the order is painter's. On slots 1-3 at 10x the image
+matches depth-off within 96 / 36 px (tunnel) and the markings are whole.
+A near lane dash was still cut at the bottom of the screen (behind the
+tachometer, owner report): near the camera SZ quantisation and R4's near
+subdivision disagree by more than the tolerance. Triangles with any vertex
+nearer than SZ 1024 (`PSX_PGXP_DEPTH_NEAR`) now stay out of the depth buffer
+(painter order), the tolerance gains an absolute 48 SZ, and every displayed
+frame starts with a cleared depth buffer. Slots 1-4 at 10x: depth on vs off
+differ by 801 / 92 / 25 / 0 px, none in the tachometer area.
+
+**Perspective-correct colour.** Gouraud colour on 3D triangles interpolates
+with 1/SZ (textured triangles with perspective UVs share their w).
+
+**Seam expansion.** At internal scale > 1 a vertex that lies on its
+neighbour's edge only to the PS1's precision leaves a hairline onto the
+background (T-junctions of R4's subdivided near polygons; tunnel walls).
+Opaque 3D triangles move each edge outward (mitred, limited at sharp
+corners): `fine` = 1 output px (`PSX_PGXP_SEAM_PX` tunes it), `wide` = half a
+native px. UVs, colour, q and SZ are extrapolated with the barycentric
+coordinates of the new corners (perspective-correct where the attribute is),
+so textures do not slide. `wide` closes larger gaps but smears edge texels
+and thickens silhouettes (beam undersides at the R4 tunnel entrance); `fine`
+is the recommended setting. Both widths apply only above 1x, and only to
+triangles the depth buffer tests: with `pgxp_depth_buffer` off, and for
+near-camera triangles kept in painter order, a widened edge would draw over
+its neighbour, so those never expand. `gl_frame_gen_test` pins both (seam
+without depth draws exactly like no features; at 1x depth+seam like depth).
+
+**R4 (hook flavor, 10x headless-opengl, Helter Skelter tunnel, savestates
+at the entrance and inside).** Thin-feature pixel counts (features narrower
+than half a native pixel against both neighbours, HUD excluded):
+entrance base 1524 / PGXP 3560 / +depth+colour 2070 / +seam fine 1410-1518;
+inside base 2323 / PGXP 539 / +depth+colour 540 / +seam fine 541-547. The
+remaining counts are mostly texture detail; the visible base cracks along
+the tunnel walls are gone with PGXP and the residual short ones with `fine`.
+Dataflow 99.86%, mixed triangles 0, 0 dispatch / segment misses; guest pace
+equal with the features on and off.
+Diagnostic: `PSX_PGXP_TRI_LOG=<file>` logs every triangle (depth mode, x y
+SZ) while `<file>.on` exists.
+
+**Off costs nothing; Smooth motion matches.** gpu.c sends
+`gr_set_depth_triangle` only while a PGXP renderer feature is on
+(`gl_renderer_pgxp_render_wanted`), so with them off the render thread
+records no extra `RTH_DEPTH` per triangle. The SZ rides in the textured
+vertex's unused colour alpha (negative when present), so the vertex stays 26
+floats for every title. The setters sync with a live render thread
+(`GL_RT_SYNC`) like their neighbours. A depth-mode change ends a textured
+batch as its own reason (`batch_diag` entry 8). Smooth-motion in-between
+frames replay `RTH_DEPTH` and test depth like the real frame, from their
+own clear: `gl_frame_gen_test` draws overlapping PGXP triangles out of painter
+order and requires the in-between frame at phase 1 to equal the real one,
+with each feature (depth, colour) alone and together; each changes the real
+image there.
 
 ## IR1 — Internal resolution presets (Native … 8K) and the GL scale ceiling (2026-09-26)
 

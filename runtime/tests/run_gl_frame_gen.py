@@ -28,6 +28,12 @@ WIN_LIBS = ["opengl32", "kernel32", "user32", "gdi32", "winmm", "imm32", "ole32"
 SKIP_EXIT = 77
 WINDOWS = os.name == "nt" or platform.system().startswith(("MINGW", "MSYS", "CYGWIN"))
 KEYS = ("real",)
+# FG_PGXP values: the scene without PGXP renderer features first.
+PGXP_FEATURES = ("none", "depth", "color", "depth,color", "seam", "depth,seam")
+# Seam expansion applies only above 1x and only to depth-tested triangles:
+# these feature sets must draw exactly like the named one (scale 1: all
+# scales), every other one must differ from "none".
+PGXP_SAME = {("seam", None): "none", ("depth,seam", 1): "depth"}
 
 
 def parse(stdout):
@@ -187,6 +193,47 @@ def main():
                 if worst > 1 or worst_px > 0.0005:
                     print(f"FAIL scale {s} {path} {timing} fg={fg}: present thread changed real frames")
                     ok = False
+    # PGXP renderer features (docs/ENHANCEMENTS.md G1.14): the scene as PGXP
+    # 3D triangles that overlap out of painter order. Per feature set, the
+    # real frames are the same with generation off and on, and the fixture's
+    # own check holds: the generated frame at phase 1 equals the real one
+    # (generated frames honour the features). Each feature changes the
+    # real image (it is visible in this scene), so the comparison means
+    # something.
+    for s in [int(v) for v in args.scales.split(",") if v]:
+        digests = {}
+        for feats in PGXP_FEATURES:
+            runs = {}
+            for fg in (0, 1):
+                sub = dest / f"pgxp-{s}-{feats}-{fg}"
+                sub.mkdir(exist_ok=True)
+                cmd = [str(c) for c in (probe, s, fg, "vram", args.frames, "flip")]
+                r = subprocess.run(cmd, cwd=sub, capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace", env=dict(os.environ, FG_PGXP=feats))
+                p = parse(r.stdout)
+                tail = r.stdout.strip().splitlines()[-5:]
+                print(f"scale {s} pgxp={feats} frame_generation={fg}: exit={r.returncode}", tail,
+                      r.stderr.strip()[-800:])
+                if r.returncode or p["failures"] != 0 or p["real"] is None:
+                    ok = False
+                runs[fg] = p["real"]
+            if runs[0] != runs[1]:
+                print(f"FAIL scale {s} pgxp={feats}: the real frames differ with generation on")
+                ok = False
+            digests[feats] = runs[0]
+        for feats in PGXP_FEATURES[1:]:
+            same = PGXP_SAME.get((feats, None)) or PGXP_SAME.get((feats, s))
+            if same:
+                if digests[feats] != digests[same]:
+                    print(f"FAIL scale {s} pgxp={feats}: differs from pgxp={same}")
+                    ok = False
+                continue
+            if digests[feats] == digests[PGXP_FEATURES[0]]:
+                print(f"FAIL scale {s} pgxp={feats}: the feature does not change the real image")
+                ok = False
+        if s > 1 and digests["depth,seam"] == digests["depth"]:
+            print(f"FAIL scale {s}: seam expansion does not change the depth-tested image")
+            ok = False
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 
