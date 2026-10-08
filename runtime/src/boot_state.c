@@ -2,6 +2,13 @@
 #include "fntrace.h"
 #include "mod_memory.h"
 #include "overlay_api.h"   /* PSX_OVERLAY_CODEGEN_HASH / _ABI_TAG / _CODEGEN_VER */
+
+/* Build-selected HLE may use private execution boundaries. Zero preserves
+ * the existing snapshot key for titles that do not select an implementation. */
+#ifndef PSX_SAVESTATE_IMPL_TAG
+#define PSX_SAVESTATE_IMPL_TAG 0u
+#endif
+#define BOOT_STATE_IMPLEMENTATION_KEY ((uint32_t)PSX_OVERLAY_CODEGEN_VER ^ (uint32_t)PSX_SAVESTATE_IMPL_TAG)
 #include "dirty_ram_interp.h"
 #include "gpu.h"           /* gpu_get_vram — CPU-auth mirror under dual-raster   */
 #include "gpu_render.h"    /* gr_vram_transfer_in / gr_vram_transfer_out          */
@@ -390,7 +397,7 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
     h.entry_pc      = entry_pc;
     h.codegen_hash  = (uint32_t)PSX_OVERLAY_CODEGEN_HASH;
     h.abi_tag       = (int32_t)PSX_OVERLAY_ABI_TAG;
-    h.codegen_ver   = (uint32_t)PSX_OVERLAY_CODEGEN_VER;
+    h.codegen_ver   = BOOT_STATE_IMPLEMENTATION_KEY;
     h.section_count = 17 + (psx_mod_memory_snapshot_bytes() ? 1u : 0u);
 
     ok = write_header_le(o, &h);
@@ -870,9 +877,9 @@ int boot_state_check_buffer(const uint8_t* file, size_t file_len,
                  (int)h.abi_tag, (int)PSX_OVERLAY_ABI_TAG);
         boot_state_append_reason(reason, reason_cap, part);
     }
-    if (h.codegen_ver != (uint32_t)PSX_OVERLAY_CODEGEN_VER) {
+    if (h.codegen_ver != BOOT_STATE_IMPLEMENTATION_KEY) {
         snprintf(part, sizeof(part), "codegen_ver=%u(want %u)",
-                 (unsigned)h.codegen_ver, (unsigned)PSX_OVERLAY_CODEGEN_VER);
+                 (unsigned)h.codegen_ver, (unsigned)BOOT_STATE_IMPLEMENTATION_KEY);
         boot_state_append_reason(reason, reason_cap, part);
     }
 

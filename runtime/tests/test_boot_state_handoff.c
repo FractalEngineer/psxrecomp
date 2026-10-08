@@ -68,6 +68,16 @@ int main(void) {
         /* Malformed, missing and duplicate phase sections must reject before
          * changing CPU, RAM or the previously active handoff latch. */
         cpu.pc=0xdeadbeef; ram[0x100]=0x55; fntrace_restore_game_started(!started);
+        /* A different build-selected implementation must reject atomically,
+         * including when its only difference is an HLE execution boundary. */
+        PstR key_reader; uint32_t implementation_key;
+        pst_r_init(&key_reader, saved + 24, 4);
+        assert(pst_r_u32(&key_reader, &implementation_key));
+        assert(implementation_key == BOOT_STATE_IMPLEMENTATION_KEY);
+        u32(saved + 24, implementation_key ^ 0x54474801u);
+        assert(!boot_state_load_buffer(saved,len,123,0x801b0000,&cpu));
+        assert(cpu.pc==0xdeadbeef && ram[0x100]==0x55 && fntrace_is_game_started()==!started);
+        u32(saved + 24, implementation_key);
         saved[len-4]=2;
         assert(!boot_state_load_buffer(saved,len,123,0x801b0000,&cpu));
         saved[len-4]=started;

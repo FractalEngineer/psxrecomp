@@ -66,7 +66,7 @@ typedef struct {
     uint32_t entry_pc;       /* game PS-EXE entry PC                              */
     uint32_t codegen_hash;   /* PSX_OVERLAY_CODEGEN_HASH (auto-gen by cmake)      */
     int32_t  abi_tag;        /* PSX_OVERLAY_ABI_TAG (abi version | flavor<<16)    */
-    uint32_t codegen_ver;    /* PSX_OVERLAY_CODEGEN_VER                           */
+    uint32_t codegen_ver;    /* codegen version XOR build PSX_SAVESTATE_IMPL_TAG  */
     /* ---- layout ---- */
     uint32_t section_count;  /* number of sections that follow                    */
     uint32_t reserved;       /* v8: enhancement-memory layout cookie; vanilla 0   */
