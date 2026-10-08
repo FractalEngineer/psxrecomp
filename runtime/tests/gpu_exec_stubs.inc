@@ -284,6 +284,9 @@ void gr_set_precise_triangle(int enabled, int32_t x0, int32_t y0,
 void gr_set_perspective_triangle(int enabled, float q0, float q1, float q2) {
     (void)enabled; (void)q0; (void)q1; (void)q2;
 }
+void gr_set_depth_triangle(int enabled, float z0, float z1, float z2) {
+    (void)enabled; (void)z0; (void)z1; (void)z2;
+}
 void gr_fill_rect(int x, int y, int w, int h, uint16_t color) {
     (void)x; (void)y; (void)w; (void)h; (void)color;
 }
@@ -375,6 +378,8 @@ uint16_t gr_vram_read(int x, int y) { (void)x; (void)y; return 0; }
 void gr_vram_transfer_in(int x, int y, int w, int h, const uint16_t *data) {
     (void)x; (void)y; (void)w; (void)h; (void)data;
 }
+void gr_vram_upload_commit(int x,int y,int w,int h,const uint16_t *d) { gr_vram_transfer_in(x,y,w,h,d); }
+void gr_vram_upload_set_open(int open) { (void)open; }
 void gr_vram_transfer_out(int x, int y, int w, int h, uint16_t *data) {
     (void)x; (void)y; (void)w; (void)h; (void)data;
 }
@@ -422,6 +427,8 @@ void gl_renderer_note_wide_triangle_recovery(int enabled) {
 }
 /* Smooth motion (frame generation) vertex sources: off in these fixtures. */
 int gl_renderer_frame_generation(void) { return 0; }
+/* PGXP renderer features: off in these fixtures. */
+int gl_renderer_pgxp_render_wanted(void) { return 0; }
 void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int32_t h[3],
                            const int32_t x[3], const int32_t y[3]) {
     (void)id; (void)pc; (void)h; (void)x; (void)y;

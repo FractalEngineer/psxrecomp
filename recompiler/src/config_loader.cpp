@@ -715,8 +715,7 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             int value = 0;
             bool ok = false;
             if (ir.is_string()) {
-                ok = psx_ir_parse(ir.as_string().str.c_str(), &value) != 0 &&
-                     value != PSX_IR_DISPLAY;
+                ok = psx_ir_parse(ir.as_string().str.c_str(), &value) != 0;
             } else if (ir.is_integer()) {
                 const auto n = ir.as_integer();
                 ok = n >= PSX_IR_MIN_LINES && n <= PSX_IR_MAX_LINES;
@@ -725,7 +724,7 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             if (!ok) {
                 throw std::runtime_error(
                     "[video] dynamic_resolution_min must be native, 720p, 1080p, "
-                    "1440p, 4k, 5k, 8k, or a number of lines");
+                    "1440p, 4k, 5k, 8k, display, or a number of lines");
             }
             rt.video_dynamic_resolution_min = value;
         }
@@ -747,6 +746,24 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         }
         if (video.contains("antialiasing")) {
             rt.video_antialiasing = toml::find<bool>(video, "antialiasing");
+        }
+        if (video.contains("antialiasing_mode")) {
+            const auto mode = toml::find<std::string>(video, "antialiasing_mode");
+            if (mode == "off")          rt.video_antialiasing_mode = 0;
+            else if (mode == "fxaa")    rt.video_antialiasing_mode = 1;
+            else if (mode == "fxaa_hq") rt.video_antialiasing_mode = 2;
+            else throw std::runtime_error(fmt::format(
+                "[video] antialiasing_mode must be \"off\", \"fxaa\" or \"fxaa_hq\": {}", mode));
+        }
+        if (video.contains("supersample")) {
+            const auto& v = toml::find(video, "supersample");
+            const double f = v.is_integer() ? static_cast<double>(v.as_integer())
+                                            : toml::get<double>(v);
+            if (!(f >= 1.0 && f <= 4.0)) {
+                throw std::runtime_error(fmt::format(
+                    "[video] supersample out of range (1.0..4.0): {}", f));
+            }
+            rt.video_supersample_milli = static_cast<int>(f * 1000.0 + 0.5);
         }
         if (video.contains("texture_filtering")) {
             const auto mode = toml::find<std::string>(video, "texture_filtering");
@@ -795,6 +812,19 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         if (video.contains("pgxp_preserve_projection")) {
             rt.video_pgxp_preserve_projection =
                 toml::find<bool>(video, "pgxp_preserve_projection");
+        }
+        if (video.contains("pgxp_depth_buffer"))
+            rt.video_pgxp_depth_buffer = toml::find<bool>(video, "pgxp_depth_buffer");
+        if (video.contains("pgxp_color_correction"))
+            rt.video_pgxp_color_correction = toml::find<bool>(video, "pgxp_color_correction");
+        if (video.contains("pgxp_depth_threshold"))
+            rt.video_pgxp_depth_threshold = toml::find<double>(video, "pgxp_depth_threshold");
+        if (video.contains("pgxp_seam")) {
+            const auto m = toml::find<std::string>(video, "pgxp_seam");
+            if (m == "off") rt.video_pgxp_seam = 0;
+            else if (m == "fine") rt.video_pgxp_seam = 1;
+            else if (m == "wide") rt.video_pgxp_seam = 2;
+            else throw std::runtime_error("[video] pgxp_seam must be \"off\", \"fine\" or \"wide\"");
         }
         if (video.contains("pgxp_mod_only")) {
             rt.video_pgxp_mod_only = toml::find<bool>(video, "pgxp_mod_only");
@@ -862,13 +892,24 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         if (video.contains("frame_generation")) {
             rt.video_frame_generation = toml::find<bool>(video, "frame_generation");
         }
+        if (video.contains("frame_generation_method")) {
+            const auto m = toml::find<std::string>(video, "frame_generation_method");
+            if      (m == "redraw")       rt.video_frame_generation_method = 0;
+            else if (m == "reprojection") rt.video_frame_generation_method = 1;
+            else throw std::runtime_error(fmt::format(
+                "[video] frame_generation_method must be \"redraw\"|\"reprojection\": {}", m));
+        }
         if (video.contains("vsync")) {
             const auto mode = toml::find<std::string>(video, "vsync");
             if      (mode == "on"  || mode == "vsync")     rt.video_vsync = 1;
             else if (mode == "off" || mode == "immediate") rt.video_vsync = 0;
             else if (mode == "adaptive")                   rt.video_vsync = -1;
+            // vrr: variable refresh (G-Sync/FreeSync, ProMotion): present
+            // each frame when it is ready (swap interval 0), Smooth motion
+            // targets the panel's maximum refresh and never exceeds it.
+            else if (mode == "vrr")                        rt.video_vsync = 2;
             else throw std::runtime_error(fmt::format(
-                "[video] vsync must be \"on\"|\"off\"|\"immediate\"|\"adaptive\": {}", mode));
+                "[video] vsync must be \"on\"|\"off\"|\"immediate\"|\"adaptive\"|\"vrr\": {}", mode));
         }
         if (video.contains("frame_interpolation")) {
             rt.video_frame_interpolation =
@@ -2783,8 +2824,7 @@ UserSettings load_user_settings(const fs::path& path) {
             const toml::value& ir = toml::find(v, "dynamic_resolution_min");
             int value = 0;
             if (ir.is_string()) {
-                if (psx_ir_parse(ir.as_string().str.c_str(), &value) &&
-                    value != PSX_IR_DISPLAY) {
+                if (psx_ir_parse(ir.as_string().str.c_str(), &value)) {
                     s.dynamic_resolution_min = value; s.has_dynamic_resolution_min = true;
                 }
             } else if (ir.is_integer()) {
@@ -2889,6 +2929,7 @@ UserSettings load_user_settings(const fs::path& path) {
             if      (m == "on"  || m == "vsync")    { s.vsync = 1;  s.has_vsync = true; }
             else if (m == "off" || m == "immediate"){ s.vsync = 0;  s.has_vsync = true; }
             else if (m == "adaptive")               { s.vsync = -1; s.has_vsync = true; }
+            else if (m == "vrr")                    { s.vsync = 2;  s.has_vsync = true; }
         });
         if (v.contains("frame_interpolation")) try_get([&]{
             s.frame_interpolation = toml::find<bool>(v, "frame_interpolation");
@@ -3193,8 +3234,7 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     if (s.has_dynamic_resolution)
         f << "dynamic_resolution = " << (s.dynamic_resolution ? "true" : "false") << "\n";
     if (s.has_dynamic_resolution_min &&
-        psx_ir_value_valid(s.dynamic_resolution_min) &&
-        s.dynamic_resolution_min != PSX_IR_DISPLAY) {
+        psx_ir_value_valid(s.dynamic_resolution_min)) {
         const char* id = psx_ir_id_for(s.dynamic_resolution_min);
         if (id)
             f << "dynamic_resolution_min = \"" << id << "\"\n";
@@ -3248,7 +3288,8 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     if (s.has_frame_generation)
         f << "frame_generation = " << (s.frame_generation ? "true" : "false") << "\n";
     if (s.has_vsync)
-        f << "vsync             = \"" << (s.vsync == 0 ? "immediate" : s.vsync < 0 ? "adaptive" : "on") << "\"\n";
+        f << "vsync             = \"" << (s.vsync == 0 ? "immediate" : s.vsync < 0 ? "adaptive"
+                                         : s.vsync == 2 ? "vrr" : "on") << "\"\n";
     if (s.has_frame_interpolation)
         f << "frame_interpolation = " << (s.frame_interpolation ? "true" : "false") << "\n";
     if (s.has_frame_interpolation_fps)

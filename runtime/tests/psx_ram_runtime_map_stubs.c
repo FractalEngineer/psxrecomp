@@ -182,3 +182,5 @@ void gr_vram_transfer_in(int x, int y, int w, int h, const uint16_t *d) {
     g_stub_device_restores++;
 }
 void gr_vram_upload_begin(int x,int y,int w,int h) { (void)x; (void)y; (void)w; (void)h; }
+void gr_vram_upload_commit(int x,int y,int w,int h,const uint16_t *d) { gr_vram_transfer_in(x,y,w,h,d); }
+void gr_vram_upload_set_open(int open) { (void)open; }

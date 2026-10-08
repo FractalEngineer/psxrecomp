@@ -3375,8 +3375,8 @@ static void gp0_commit_cpu_to_vram(void) {
             vram_write_pixels[row * vram_write_w + col] =
                 vram[((vram_write_y + row) & 511u) * 1024u +
                      ((vram_write_x + col) & 1023u)];
-    gr_vram_transfer_in(vram_write_x, vram_write_y,
-                        vram_write_w, vram_write_h, vram_write_pixels);
+    gr_vram_upload_commit(vram_write_x, vram_write_y,
+                          vram_write_w, vram_write_h, vram_write_pixels);
     depth24_note_upload(vram_write_x, vram_write_w);
     gp0_state = GP0_IDLE;
     vram_write_remaining = 0;
@@ -4612,6 +4612,10 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
         gl_renderer_fg_source(id, pc, hd, vx, vy);
     }
     gr_set_perspective_triangle(0, 0.0f, 0.0f, 0.0f);
+    /* PGXP depth (G1.14) only reaches the renderer while a PGXP renderer
+     * feature is on: with them off no depth command is sent per triangle. */
+    const int want_depth = gl_renderer_pgxp_render_wanted();
+    if (want_depth) gr_set_depth_triangle(0, 0.0f, 0.0f, 0.0f);
     const int geometry = gte_geometry_correction_enabled();
     if (!geometry && !s_native_wide_projection_correction) {
         gr_set_precise_triangle(0, 0,0, 0,0, 0,0);
@@ -4619,6 +4623,7 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
     }
     const int idx[3] = { i0, i1, i2 };
     int32_t fx[3], fy[3];
+    uint16_t vz[3] = {0, 0, 0};
     int any_precise = 0, n_precise = 0;
     PGXPTriRecord rec;
     memset(&rec, 0, sizeof rec);
@@ -4634,12 +4639,15 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
         int src = PGXP_SRC_NATIVE;
         px = raw_x * 65536;
         py = raw_y * 65536;
+        sz = 0;
         if (geometry)
             src = pgxp_get_precise_vertex(addr, word, raw_x, raw_y, &px, &py, &sz);
         if (src != PGXP_SRC_NATIVE) {
             any_precise = 1;
             n_precise++;
         }
+        /* PGXP depth (G1.14): only a dataflow shadow carries a validated SZ. */
+        vz[i] = src == PGXP_SRC_DATAFLOW ? sz : 0;
         /* Native-wide edge recovery is not PGXP: it does not count in n_precise. */
         if (native_wide_projection_x(addr, word, raw_x, raw_y, &px))
             any_precise = 1;
@@ -4665,6 +4673,8 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
         return;
     }
     gr_set_precise_triangle(1, fx[0],fy[0], fx[1],fy[1], fx[2],fy[2]);
+    if (want_depth && vz[0] && vz[1] && vz[2])
+        gr_set_depth_triangle(1, (float)vz[0], (float)vz[1], (float)vz[2]);
 }
 
 /* A textured quad whose four packet vertices form an axis-aligned rectangle
@@ -7509,6 +7519,7 @@ static void gp1_reset(void) {
 
 static void gp1_reset_command_buffer(void) {
     /* GP1(01h): Reset command buffer — clears FIFO, aborts current command */
+    if (gp0_state == GP0_VRAM_WRITE) gr_vram_upload_set_open(0);
     gp0_state = GP0_IDLE;
     gp0_words_collected = 0;
     gp0_words_needed = 0;
@@ -7846,6 +7857,8 @@ int gpu_snapshot_read(const uint8_t *p, uint32_t len) {
      * on a stale draw area after savestate load. */
     gr_set_draw_area((int)draw_area_left, (int)draw_area_top,
                      (int)draw_area_right, (int)draw_area_bottom);
+    /* A state saved mid-A0 resumes streaming its payload into the array. */
+    gr_vram_upload_set_open(gp0_state == GP0_VRAM_WRITE);
     ws_nw_sync_target();
     return 1;
 }

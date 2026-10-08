@@ -354,6 +354,25 @@ static void test_pipeline_user_settings() {
     check(back.has_frame_generation && back.frame_generation, "frame_generation round-trips");
     fs::remove(p);
 
+    /* [video] vsync: every mode parses from settings.toml and a launcher
+     * save writes back the same mode (vrr = 2 included). */
+    const struct { const char *text; int value; } vs[] = {
+        { "on", 1 }, { "immediate", 0 }, { "adaptive", -1 }, { "vrr", 2 } };
+    for (const auto &m : vs) {
+        p = write_temp("psxrecomp_vsync_read.toml",
+                       std::string("[video]\nvsync = \"") + m.text + "\"\n");
+        auto vr = PSXRecompV4::load_user_settings(p);
+        check(vr.has_vsync && vr.vsync == m.value, "settings vsync parses every mode");
+        fs::remove(p);
+        PSXRecompV4::UserSettings vo;
+        vo.has_vsync = true; vo.vsync = m.value;
+        p = fs::temp_directory_path() / "psxrecomp_vsync_rt.toml";
+        check(PSXRecompV4::save_user_settings(p, vo), "save_user_settings writes vsync");
+        auto vb = PSXRecompV4::load_user_settings(p);
+        check(vb.has_vsync && vb.vsync == m.value, "settings vsync round-trips every mode");
+        fs::remove(p);
+    }
+
     PSXRecompV4::UserSettings none;
     p = fs::temp_directory_path() / "psxrecomp_pipe_none.toml";
     check(PSXRecompV4::save_user_settings(p, none), "save_user_settings writes defaults");
@@ -422,6 +441,31 @@ static void test_pgxp_title_keys() {
           "pgxp_preserve_projection defaults OFF (unchanged behaviour)");
     check(!gc.runtime.video_pgxp_mod_only,
           "pgxp_mod_only defaults OFF (unchanged behaviour)");
+    check(!gc.runtime.video_pgxp_depth_buffer && !gc.runtime.video_pgxp_color_correction &&
+          gc.runtime.video_pgxp_seam == 0 && gc.runtime.video_pgxp_depth_threshold == 4096.0,
+          "PGXP renderer features default OFF (G1.14)");
+    fs::remove(p);
+
+    p = write_game_toml("psxrecomp_pgxp_render_keys.toml",
+        "[video]\n"
+        "pgxp_depth_buffer = true\n"
+        "pgxp_color_correction = true\n"
+        "pgxp_seam = \"wide\"\n"
+        "pgxp_depth_threshold = 2048.0\n");
+    gc = PSXRecompV4::load_game_config(p);
+    check(gc.runtime.video_pgxp_depth_buffer && gc.runtime.video_pgxp_color_correction &&
+          gc.runtime.video_pgxp_seam == 2 && gc.runtime.video_pgxp_depth_threshold == 2048.0,
+          "PGXP renderer keys are honoured");
+    fs::remove(p);
+
+    p = write_game_toml("psxrecomp_pgxp_render_bad.toml",
+        "[video]\n"
+        "pgxp_seam = \"huge\"\n");
+    {
+        bool bad = false;
+        try { (void)PSXRecompV4::load_game_config(p); } catch (const std::exception&) { bad = true; }
+        check(bad, "pgxp_seam must be off, fine or wide");
+    }
     fs::remove(p);
 
     p = write_game_toml("psxrecomp_pgxp_keys_dataflow.toml",

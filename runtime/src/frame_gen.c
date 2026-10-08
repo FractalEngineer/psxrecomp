@@ -45,6 +45,8 @@ void fg_cam_defaults(FgCamParams *p) {
     p->max_angle = 0.35f;
     p->max_shift = 0.5f;
     p->max_obj = 0.25f;
+    p->keep_partial = 0;
+    p->freeze_small_views = 0;
 }
 
 /* ---- rigid motion ---- */
@@ -292,6 +294,7 @@ done:
 int fg_cam_fit(const FgPrimList *older, const FgPrimList *newer, const FgCamParams *p,
                FgCamFit *fit, FgVert *verts) {
     memset(fit, 0, sizeof *fit);
+    fit->freeze_small_views = p->freeze_small_views;
     fit->prims = newer->n;
     for (uint32_t j = 0; j < newer->n * 3u; j++) {
         verts[j].mode = FG_PLACE_UNCHANGED; verts[j].view = -1; verts[j].paired = 0;
@@ -349,6 +352,19 @@ int fg_cam_fit(const FgPrimList *older, const FgPrimList *newer, const FgCamPara
         free(pa); free(pb); free(in); free(sb);
     }
     fit->ok = all;
+    if (!all && p->keep_partial) {
+        int any = 0;
+        for (uint32_t vi = 0; vi < fit->nviews; vi++) any |= fit->v[vi].ok;
+        if (any) {
+            for (uint32_t j = 0; j < newer->n * 3u; j++) {
+                const int vi = verts[j].view;
+                if (vi >= 0 && (uint32_t)vi < fit->nviews && !fit->v[vi].ok) {
+                    verts[j].mode = FG_PLACE_UNCHANGED; verts[j].view = -1;
+                }
+            }
+            fit->ok = all = 1;
+        }
+    }
     if (!all) {
         for (uint32_t j = 0; j < newer->n * 3u; j++) verts[j].mode = FG_PLACE_UNCHANGED;
         return 0;
@@ -604,6 +620,24 @@ void fg_cam_place(const FgPrimList *newer, FgCamFit *fit, const FgVert *verts,
     free(done);
     fit->clamped = clamped;
     fit->guessed = guessed;
+    /* Opt-in reprojection policy only: small views stay as the
+     * real frame drew them: their camera is fitted from a few dozen
+     * vertices, and a wrong fit threw their lane marks across the screen as
+     * a dashed line. At this size their 30 Hz motion does not show. */
+    if (fit->freeze_small_views) {
+        float big = 0.0f;
+        for (uint32_t vi = 0; vi < fit->nviews; vi++) {
+            const float *ar = fit->v[vi].area;
+            const float a = (ar[2] - ar[0]) * (ar[3] - ar[1]);
+            if (a > big) big = a;
+        }
+        for (uint32_t i = 0; i < n * 3u; i++) {
+            const int vi = verts[i].view;
+            if (vi < 0 || (uint32_t)vi >= fit->nviews) continue;
+            const float *ar = fit->v[vi].area;
+            if ((ar[2] - ar[0]) * (ar[3] - ar[1]) < 0.15f * big) { dxs[i] = 0.0f; dys[i] = 0.0f; }
+        }
+    }
     for (uint32_t i = 0; i < n * 3u; i++) { x[i] += dxs[i]; y[i] += dys[i]; }
     /* Margins: vertices on or past a view edge that moved inward. */
     if (margin)
@@ -632,9 +666,60 @@ int fg_plan(double flip_s, double refresh_hz, double real_cost_s,
     if (n > max_gens) n = max_gens;
     const double room = budget * flip_s - (real_cost_s > 0.0 ? real_cost_s : 0.0);
     if (room <= 0.0) return 0;
-    if (gen_cost_s <= 0.0) return room >= 0.5 * budget * flip_s ? 1 : 0;
+    /* Unmeasured: one frame to measure it, while a third of the budget is
+     * free (a generated frame costs a fraction of a real one). Half was too
+     * strict: a real frame over 42 % of the interval (Windows, R4 at 30 Hz
+     * with the display ring: 2 x 7.2 ms of 33.4) never let the first one be
+     * drawn, so the cost was never measured and nothing was generated. */
+    if (gen_cost_s <= 0.0) return room >= budget * flip_s / 3.0 ? 1 : 0;
     int fit = (int)floor(room / gen_cost_s);
     return fit < n ? (fit > 0 ? fit : 0) : n;
+}
+
+double fg_step_s(double flip_s, double refresh_hz, int n) {
+    if (refresh_hz > 0.0) return 1.0 / refresh_hz;
+    if (n <= 0 || flip_s <= 0.0) return flip_s > 0.0 ? flip_s : 0.0;
+    return flip_s / (double)(n + 1);
+}
+
+/* The last phase fg_clock_phase still generates; at or past it the next
+ * real frame is due. Shared with fg_slots so the plan (and the dynamic
+ * resolution budget) counts exactly the frames the clock shows. */
+#define FG_PHASE_LAST 0.985
+
+int fg_slots(double flip_s, double refresh_hz) {
+    if (flip_s <= 0.0 || refresh_hz <= 0.0) return 0;
+    /* The clock generates at phase k / (flip_s * refresh_hz), k = 1, 2, ...
+     * while below FG_PHASE_LAST: 59.94 Hz content on 60 Hz (2.002
+     * intervals) shows one, at 100 Hz (3.34) three, on 120 Hz (4.004) three. */
+    const double step = 1.0 / (flip_s * refresh_hz);
+    int k = 1;
+    while (k < 64 && (double)k * step < FG_PHASE_LAST) k++;
+    return k;   /* the shown in-between frames + the real one */
+}
+
+double fg_plan_hz(double flip_s, double refresh_hz) {
+    if (flip_s <= 0.0 || refresh_hz <= 0.0) return refresh_hz;
+    return (double)fg_slots(flip_s, refresh_hz) / flip_s;
+}
+
+uint64_t fg_next_due(uint64_t due, uint64_t now, uint64_t step_ns) {
+    /* On the grid while close to it; a late present restarts it, so frames
+     * are never closer together than one interval. */
+    if (due != 0u && now >= due && now - due < step_ns / 2u) return due + step_ns;
+    return now + step_ns;
+}
+
+double fg_clock_phase(uint64_t since_real_ns, uint64_t step_ns, uint64_t flip_ns) {
+    if (flip_ns == 0u) return 0.0;
+    double t = ((double)since_real_ns + (double)step_ns) / (double)flip_ns;
+    /* At (or past) the next real frame's time it is the real one. The
+     * phase is where the camera is when this frame is seen, one interval
+     * from now, so the last in-between frame of a game frame lands close
+     * to 1 (a quarter-interval margin here dropped it at every refresh). */
+    (void)step_ns;
+    if (t >= FG_PHASE_LAST) return 0.0;
+    return t;
 }
 
 void fg_breaker_init(FgBreaker *b, double base_hold, double max_hold, double repeat_s) {
@@ -687,6 +772,9 @@ void fg_cost_add(FgCost *c, double cost_s, double fit_s) {
             }
         }
     } else {
+        /* One stall (an allocation, a driver hiccup) moves the estimate by
+         * at most a few times itself; a lasting change still wins. */
+        if (c->clamp_spikes && cost_s > 4.0 * c->ema) cost_s = 4.0 * c->ema;
         c->ema = c->ema * 0.8 + cost_s * 0.2;
     }
     if (fit_s <= 0.0 || c->ema <= fit_s) c->blocked_since = -1.0;
@@ -744,4 +832,94 @@ int fg_ceiling_get(FgCeiling *c, double now) {
         c->last = c->last < -1e29 ? now : c->last + c->recover_s;
     }
     return c->cap;
+}
+
+/* HUD motion: 2D triangles (no GTE projection: gauges, needles) of the
+ * redrawn list L that the other frame O draws too (same key: op, texture,
+ * colour, UVs, in the same order among the 2D triangles) and that moved a
+ * little (at most max_px per corner: a tachometer needle, a sliding panel)
+ * are placed at fraction u of the way from L to O. Anything that changed
+ * what it draws (digits) or jumped stays as L drew it. */
+/* The 2D triangles of L that fg_hud_lerp moves (moved[j] = 1). */
+void fg_hud_match(const FgPrimList *L, const FgPrimList *O, float max_px, uint8_t *moved) {
+    if (!L || !moved) return;
+    memset(moved, 0, L->n);
+    if (!O) return;
+    float *x = (float *)malloc((size_t)L->n * 3 * sizeof *x), *y = (float *)malloc((size_t)L->n * 3 * sizeof *y);
+    if (!x || !y) { free(x); free(y); return; }
+    for (uint32_t j = 0; j < L->n; j++)
+        for (int k = 0; k < 3; k++) { x[3 * j + k] = L->v[j].x[k]; y[3 * j + k] = L->v[j].y[k]; }
+    fg_hud_lerp(L, O, 0.5, x, y, max_px);
+    for (uint32_t j = 0; j < L->n; j++) {
+        const FgPrim *p = &L->v[j];
+        /* Gauge needles are small; a 2D backdrop gradient that shifts with
+         * the camera is not one. */
+        const float bw = fmaxf(p->x[0], fmaxf(p->x[1], p->x[2])) - fminf(p->x[0], fminf(p->x[1], p->x[2]));
+        const float bh = fmaxf(p->y[0], fmaxf(p->y[1], p->y[2])) - fminf(p->y[0], fminf(p->y[1], p->y[2]));
+        if (bw > 48.0f || bh > 48.0f) continue;
+        for (int k = 0; k < 3; k++)
+            if (x[3 * j + k] != p->x[k] || y[3 * j + k] != p->y[k]) moved[j] = 1;
+    }
+    free(x); free(y);
+}
+
+#define FG_HUD_WINDOW 8u
+void fg_hud_lerp(const FgPrimList *L, const FgPrimList *O, double u, float *x, float *y,
+                 float max_px) {
+    if (!L || !O || u <= 0.0 || u >= 1.0) return;
+    uint32_t o = 0;
+    for (uint32_t j = 0; j < L->n; j++) {
+        const FgPrim *a = &L->v[j];
+        if (a->vid[0] || a->vid[1] || a->vid[2]) continue;
+        /* The match is searched among the next FG_HUD_WINDOW 2D triangles of
+         * O (a match on the last of them counts). */
+        uint32_t m = o, seen = 0;
+        int found = 0;
+        for (; m < O->n && seen < FG_HUD_WINDOW; m++) {
+            const FgPrim *b = &O->v[m];
+            if (b->vid[0] || b->vid[1] || b->vid[2]) continue;
+            seen++;
+            if (b->key == a->key && b->view == a->view) { found = 1; break; }
+        }
+        if (!found) continue;
+        const FgPrim *b = &O->v[m];
+        o = m + 1;
+        int ok = 1, moved = 0;
+        for (int k = 0; k < 3; k++) {
+            const float dx = b->x[k] - a->x[k], dy = b->y[k] - a->y[k];
+            if (fabsf(dx) > max_px || fabsf(dy) > max_px) ok = 0;
+            if (dx != 0.0f || dy != 0.0f) moved = 1;
+        }
+        if (!ok || !moved) continue;
+        for (int k = 0; k < 3; k++) {
+            x[3 * j + k] = a->x[k] + (b->x[k] - a->x[k]) * (float)u;
+            y[3 * j + k] = a->y[k] + (b->y[k] - a->y[k]) * (float)u;
+        }
+    }
+}
+
+/* The in-between camera of view vi at phase t (fg_cam_place's motion) as an
+ * affine map on camera-space points of the newer frame: P_t = A P + b. */
+int fg_view_affine(const FgCamFit *fit, int vi, double t, float A[9], float b[3]) {
+    if (!fit || vi < 0 || (uint32_t)vi >= fit->nviews) return 0;
+    const FgView *v = &fit->v[vi];
+    double M[9], Rt[9];
+    q_to_m(v->q, M);
+    const double w = fmin(1.0, fabs(v->q[0]));
+    const double ang = 2.0 * acos(w), sn = sqrt(fmax(0.0, 1.0 - w * w));
+    double qt[4] = { 1, 0, 0, 0 };
+    if (sn > 1e-9) {
+        const double sg = v->q[0] < 0 ? -1.0 : 1.0;
+        qt[0] = cos(0.5 * ang * t);
+        for (int k = 0; k < 3; k++) qt[k + 1] = sg * v->q[k + 1] / sn * sin(0.5 * ang * t);
+    }
+    q_to_m(qt, Rt);
+    double Am[9];
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)   /* (Rt M^T)[r][c] = sum_k Rt[r][k] M[c][k] */
+            Am[3 * r + c] = Rt[3 * r] * M[3 * c] + Rt[3 * r + 1] * M[3 * c + 1] + Rt[3 * r + 2] * M[3 * c + 2];
+    for (int k = 0; k < 9; k++) A[k] = (float)Am[k];
+    for (int r = 0; r < 3; r++)
+        b[r] = (float)(t * v->t[r] - (Am[3 * r] * v->t[0] + Am[3 * r + 1] * v->t[1] + Am[3 * r + 2] * v->t[2]));
+    return 1;
 }

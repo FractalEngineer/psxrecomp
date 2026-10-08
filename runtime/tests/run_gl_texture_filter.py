@@ -77,6 +77,7 @@ def main():
     if args.hd_pack:
         pack=out/'pack'; (pack/'replacements').mkdir(parents=True,exist_ok=True)
         (pack/'beetle'/'demo-texture-replacements').mkdir(parents=True,exist_ok=True)
+        (pack/'beetle-other'/'demo-texture-replacements').mkdir(parents=True,exist_ok=True)
         arguments=[pack]
     run([exe,*arguments],{'PSX_GL_HIRES_WINDOW':'0'} if args.hd_pack else None)
     if args.hd_pack: run([exe,*arguments],{'PSX_GL_HIRES_WINDOW':'1'})

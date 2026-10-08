@@ -73,6 +73,11 @@
 #include <stdarg.h>
 #include <stdint.h>
 
+#if defined(_MSC_VER)
+/* MSVC's three-argument reentrant tokenizer is named strtok_s. */
+#  define strtok_r strtok_s
+#endif
+
 #ifndef DEFAULT_DEBUG_PORT
 #error DEFAULT_DEBUG_PORT must be defined by the runtime target.
 #endif
@@ -8557,6 +8562,17 @@ static void handle_synth_recurse(int id, const char *json)
 #endif
 }
 
+/* post_aa: post-process anti-aliasing, live. {"cmd":"post_aa"} reads it,
+ * {"cmd":"post_aa","mode":0|1|2} sets it (off, fxaa, fxaa_hq). */
+static void handle_post_aa(int id, const char *json)
+{
+    int mode = json_get_int(json, "mode", -1);
+    if (mode >= 0) (void)gl_renderer_set_post_aa(mode);
+    send_fmt("{\"id\":%d,\"ok\":true,\"mode\":%d,\"passes\":%llu,\"gpu_us\":%.1f}", id,
+             gl_renderer_post_aa(), (unsigned long long)gl_renderer_post_aa_passes(),
+             gl_renderer_post_aa_gpu_us());
+}
+
 static void handle_frame_perf(int id, const char *json)
 {
     (void)json;
@@ -8574,11 +8590,11 @@ static void handle_frame_perf(int id, const char *json)
     double wcanon = wide[5] - wide[10]; if (wcanon < 0) wcanon = 0;
     double wmpp   = wide[12] > 0 ? wide[10] * 1000.0 / wide[12] : 0.0;
     double tex_frac = 0.0; gl_renderer_perf_prim_split(&tex_frac);
-    uint64_t br[8]; extern void gl_renderer_batch_diag(uint64_t out[8]);
+    uint64_t br[9]; extern void gl_renderer_batch_diag(uint64_t out[9]);
     gl_renderer_batch_diag(br);
     send_fmt("{\"id\":%d,\"ok\":true,\"samples\":%d,\"wide_frames\":%d,\"frames_4_3\":%d,"
              "\"tex_frac\":%.3f,\"ws_ablate\":%d,"
-             "\"batch_diag\":[%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu],"
+             "\"batch_diag\":[%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu],"
              "\"all\":{\"total_ms_avg\":%.3f,\"total_ms_max\":%.3f,\"emu_cpu_ms_avg\":%.3f,"
              "\"present_wall_ms_avg\":%.3f,\"scene_gpu_ms_avg\":%.3f,\"scene_gpu_ms_max\":%.3f,"
              "\"present_gpu_ms_avg\":%.3f,\"present_gpu_ms_max\":%.3f,\"prims_avg\":%.0f},"
@@ -8598,6 +8614,7 @@ static void handle_frame_perf(int id, const char *json)
              (unsigned long long)br[2], (unsigned long long)br[3],
              (unsigned long long)br[4], (unsigned long long)br[5],
              (unsigned long long)br[6], (unsigned long long)br[7],
+             (unsigned long long)br[8],
              all[1], all[2], all[3], all[4], all[5], all[6], all[7], all[8], all[9],
              (int)wide[0], wide[1], wide[3], wide[5], wide[6], wide[7], wide[9], wpp,
              wide[10], wide[11], wcanon, wide[12], wmpp,
@@ -9086,6 +9103,20 @@ static void handle_window_size(int id, const char *json) {
  * path in the chosen mode without a relaunch. 2 = native-wide, 1 = squash. */
 extern void psx_ws_set_native_wide(int on);
 extern int  psx_ws_get_native_wide(void);
+/* Live A/B keys (main.cpp debug_toggle_key): `debug_key key=<0-9>` acts as
+ * if the key was pressed in the game window. */
+extern int psx_debug_toggle_key(int ch, char *out, int cap);
+static void handle_debug_key(int id, const char *json)
+{
+    int k = json_get_int(json, "key", -1);
+    char msg[256] = "";
+    /* key 0-9, or 110-112 for F10-F12 */
+    int ok = (k >= 0 && k <= 9 && psx_debug_toggle_key('0' + k, msg, (int)sizeof msg)) ||
+             (k >= 110 && k <= 112 && psx_debug_toggle_key('a' + (k - 109), msg, (int)sizeof msg));
+    for (char *c = msg; *c; c++) if (*c == '"' || *c == '\\') *c = '\'';
+    send_fmt("{\"id\":%d,\"ok\":%s,\"state\":\"%s\"}", id, ok ? "true" : "false", msg);
+}
+
 static void handle_ws_nw(int id, const char *json)
 {
     int on = json_get_int(json, "on", -1);
@@ -10526,7 +10557,7 @@ static void handle_render_thread(int id, const char *json)
 static void handle_frame_gen(int id, const char *json)
 {
     (void)json;
-    char buf[1024];
+    char buf[4096];
     if (gl_renderer_frame_gen_json(buf, sizeof buf) <= 0) buf[0] = 0;
     send_fmt("{\"id\":%d,\"ok\":true,%s}", id, buf[0] ? buf : "\"enabled\":0");
 }
@@ -15613,6 +15644,7 @@ static const CmdEntry s_commands[] = {
     { "display_aspect",    handle_display_aspect },
     { "window_size",       handle_window_size },
     { "ws_nw",             handle_ws_nw },
+    { "debug_key",         handle_debug_key },
     { "scanline",          handle_scanline },
     { "ws_backdrop_ring",  handle_ws_backdrop_ring },
     { "ws_ui_groups",      handle_ws_ui_groups },
@@ -15632,6 +15664,7 @@ static const CmdEntry s_commands[] = {
     { "gpu_timeline",      handle_gpu_timeline },
     { "nclip_stats",       handle_nclip_stats },
     { "frame_perf",        handle_frame_perf },
+    { "post_aa",           handle_post_aa },
     { "gl_ws_ablate",      handle_gl_ws_ablate },
     { "gl_interp",         handle_gl_interp },
     { "render_pass_stats", handle_render_pass_stats },

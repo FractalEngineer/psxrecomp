@@ -202,8 +202,11 @@ static void test_plan(void) {
     /* Only what fits: 33.4 ms * 0.85 = 28.4; real 20 ms leaves 8.4 -> two of 4 ms. */
     check(fg_plan(f30, 120.0, 0.020, 0.004, 0.85, 7) == 2, "only what fits");
     check(fg_plan(f30, 120.0, 0.030, 0.001, 0.85, 7) == 0, "no surplus: none");
-    /* Unknown generation cost: one, if half the budget is free. */
+    /* Unknown generation cost: one, if a third of the budget is free. */
     check(fg_plan(f30, 120.0, 0.010, 0.0, 0.85, 7) == 1, "unmeasured: one to measure");
+    /* Windows, R4 30 Hz with the display ring: 2 x 7.2 ms real leaves 14 of
+     * 28.4 ms, under half; one is still drawn to measure the cost. */
+    check(fg_plan(f30, 120.0, 0.0144, 0.0, 0.85, 7) == 1, "unmeasured, real over 42 %: one to measure");
     check(fg_plan(f30, 120.0, 0.020, 0.0, 0.85, 7) == 0, "unmeasured without room: none");
     check(fg_plan(f30, 240.0, 0.001, 0.0001, 0.85, 2) == 2, "max_gens caps");
 }
@@ -313,7 +316,188 @@ static void test_ceiling(void) {
     check(fg_ceiling_get(&c, 100.0) == 7, "up to the maximum");
 }
 
+/* Any-rate presents: the grid fg_tick runs (fg_next_due, fg_clock_phase,
+ * fg_plan at fg_plan_hz), simulated over 10 s of 30 Hz game frames. */
+static void test_any_rate(void) {
+    const double rates[] = { 60.0, 90.0, 100.0, 120.0, 144.0, 165.0, 240.0, 360.0 };
+    const double flip_s = 2.0 / 59.94;
+    const uint64_t flip_ns = (uint64_t)(flip_s * 1e9);
+    for (unsigned r = 0; r < sizeof rates / sizeof rates[0]; r++) {
+        const double hz = rates[r];
+        const uint64_t step = (uint64_t)(fg_step_s(flip_s, hz, 1) * 1e9);
+        const int n = fg_plan(flip_s, fg_plan_hz(flip_s, hz), 0.001, 0.0005, 0.85, 64);
+        uint64_t due = 0, last = 0, min_gap = UINT64_MAX;
+        unsigned presents = 0, frames = 300, gens = 0;
+        int phase_ok = 1, shown_ok = 1;
+        unsigned max_shown = 0;
+        /* A whole number of intervals a game frame (59.94 Hz content on
+         * 60 / 120 / 240 / 360 Hz): every game frame shows the same count. */
+        const double x = flip_s * hz;
+        const int whole = fabs(x - floor(x + 0.5)) < 0.01;
+        for (unsigned f = 0; f < frames; f++) {
+            const unsigned gens_before = gens;
+            const uint64_t t0 = (uint64_t)f * flip_ns, next = t0 + flip_ns;
+            if (due < t0 || due > t0 + step) due = t0;
+            double prev_t = 0.0;
+            for (int k = 1;; ) {
+                uint64_t now = due;
+                if (now >= next) { now = next; }
+                else if (k <= n) {
+                    double t = fg_clock_phase(now - t0, step, flip_ns);
+                    if (t > 0.0) {
+                        if (!(t > prev_t && t < 1.0)) phase_ok = 0;
+                        prev_t = t; k++; gens++;
+                        if (presents && now - last < min_gap) min_gap = now - last;
+                        last = now; presents++;
+                        due = fg_next_due(due, now, step);
+                        continue;
+                    }
+                }
+                if (presents && now - last < min_gap && now != next) min_gap = now - last;
+                last = now; presents++;
+                due = fg_next_due(due, now, step);
+                break;
+            }
+            /* Every planned in-between frame is shown (the plan, and the
+             * dynamic resolution budget built on it, count no dropped one). */
+            if (f > 0 && gens - gens_before > max_shown) max_shown = gens - gens_before;
+            if (f > 0 && whole && gens - gens_before != (unsigned)n) shown_ok = 0;
+        }
+        const double secs = frames * flip_s, rate = presents / secs;
+        char what[96];
+        snprintf(what, sizeof what, "%.0f Hz: %.1f presents/s, phases rise", hz, rate);
+        check(phase_ok && rate > hz * 0.95 && rate < hz * 1.03, what);
+        snprintf(what, sizeof what, "%.0f Hz: no two presents closer than one interval", hz);
+        check(min_gap + 1000u >= step, what);
+        /* The plan (and the dynamic resolution budget built on it) is the
+         * most frames the clock shows in a game frame: none planned is
+         * dropped every frame, none shown is unbudgeted. */
+        snprintf(what, sizeof what, "%.0f Hz: the clock shows up to the %d planned frames", hz, n);
+        check(max_shown == (unsigned)n && shown_ok, what);
+    }
+}
+
+/* 59.94 Hz content (two VBlanks a game frame) on 60 / 120 Hz panels: 2.002
+ * and 4.004 intervals. The clock shows 1 / 3 in-between frames; the plan
+ * and the dynamic resolution share count exactly those (fg_slots). */
+static void test_slots_5994(void) {
+    const double flip_s = 2.0 / 59.94;
+    check(fg_slots(flip_s, 60.0) == 2, "59.94 on 60 Hz: 2 slots (1 in-between frame)");
+    check(fg_slots(flip_s, 120.0) == 4, "59.94 on 120 Hz: 4 slots");
+    check(fg_slots(flip_s, 100.0) == 4, "59.94 on 100 Hz: 4 slots (3.34 intervals)");
+    check(fg_slots(2.0 / 60.0, 60.0) == 2, "60 on 60 Hz: 2 slots");
+    check(fg_plan(flip_s, fg_plan_hz(flip_s, 60.0), 0.001, 0.0005, 0.85, 64) == 1,
+          "59.94 on 60 Hz: one in-between frame planned");
+    check(fg_plan(flip_s, fg_plan_hz(flip_s, 120.0), 0.001, 0.0005, 0.85, 64) == 3,
+          "59.94 on 120 Hz: three planned");
+}
+
+static void test_hud_lerp(void) {
+    FgPrimList L = {0}, O = {0};
+    FgPrim p; memset(&p, 0, sizeof p);
+    p.key = 7; p.view = 1;
+    p.x[0] = 10; p.y[0] = 10; p.x[1] = 20; p.y[1] = 10; p.x[2] = 15; p.y[2] = 30;
+    fg_prims_add(&L, &p);                          /* needle */
+    p.key = 9; fg_prims_add(&L, &p);               /* a digit */
+    FgPrim q = L.v[0]; q.x[2] = 25; fg_prims_add(&O, &q);      /* needle tip moved 10 px */
+    q = L.v[1]; q.key = 10; fg_prims_add(&O, &q);             /* the digit changed */
+    float x[6], y[6];
+    for (int i = 0; i < 6; i++) { x[i] = L.v[i / 3].x[i % 3]; y[i] = L.v[i / 3].y[i % 3]; }
+    fg_hud_lerp(&L, &O, 0.5, x, y, 24.0f);
+    check(x[2] == 20.0f && x[0] == 10.0f, "HUD needle halfway between the frames");
+    check(x[5] == 15.0f, "a changed digit stays as drawn");
+    fg_prims_free(&L); fg_prims_free(&O);
+
+    /* The match window is 8 2D triangles of the other frame, the 8th
+     * included: a needle found there still moves, one at the 9th does not. */
+    for (int at = 8; at <= 9; at++) {
+        FgPrimList A = {0}, B = {0};
+        memset(&p, 0, sizeof p);
+        p.key = 7; p.view = 1;
+        p.x[0] = 10; p.y[0] = 10; p.x[1] = 20; p.y[1] = 10; p.x[2] = 15; p.y[2] = 30;
+        fg_prims_add(&A, &p);
+        for (int i = 1; i < at; i++) { FgPrim o = p; o.key = 100 + i; fg_prims_add(&B, &o); }
+        FgPrim m = p; m.x[2] = 25; fg_prims_add(&B, &m);
+        float ax[3] = { 10, 20, 15 }, ay[3] = { 10, 10, 30 };
+        fg_hud_lerp(&A, &B, 0.5, ax, ay, 24.0f);
+        check(at == 8 ? ax[2] == 20.0f : ax[2] == 15.0f,
+              at == 8 ? "a match at the 8th 2D triangle moves" : "a match at the 9th stays");
+        fg_prims_free(&A); fg_prims_free(&B);
+    }
+}
+
+static void test_view_affine(void) {
+    FgCamFit f; memset(&f, 0, sizeof f);
+    f.nviews = 1;
+    const double a = 0.1;   /* 0.2 rad about y */
+    f.v[0].q[0] = cos(a); f.v[0].q[2] = sin(a);
+    f.v[0].t[0] = 30; f.v[0].t[1] = -5; f.v[0].t[2] = 400;
+    float A[9], b[3];
+    check(fg_view_affine(&f, 0, 1.0, A, b), "affine");
+    check(fabsf(A[0] - 1) < 1e-5f && fabsf(A[4] - 1) < 1e-5f && fabsf(A[8] - 1) < 1e-5f &&
+          fabsf(A[1]) < 1e-5f && fabsf(b[0]) < 1e-3f && fabsf(b[2]) < 1e-3f, "t = 1: the newer camera itself");
+    /* t = 0 maps a newer point back to the older frame: P_old = M^T (P - T). */
+    fg_view_affine(&f, 0, 0.0, A, b);
+    const float P[3] = { 100, 20, 1000 };
+    const float o0 = A[0] * P[0] + A[1] * P[1] + A[2] * P[2] + b[0];
+    const float o2 = A[6] * P[0] + A[7] * P[1] + A[8] * P[2] + b[2];
+    /* M rotates about y by 0.2: M^T (P-T) */
+    const double c = cos(2 * a), sn = sin(2 * a), dx = P[0] - 30, dz = P[2] - 400;
+    check(fabs(o0 - (c * dx - sn * dz)) < 1e-2 && fabs(o2 - (sn * dx + c * dz)) < 1e-2,
+          "t = 0: the older frame's position");
+}
+
+/* A 320x240 main view and a 64x48 inset with the same valid camera motion.
+ * The inset must still interpolate in redraw; only opt-in reprojection
+ * freezes it. Zero-initialized fits also keep the default redraw policy. */
+static void test_small_view_policy(void) {
+    FgPrim p[2] = {0}; FgCamFit fit = {0}; FgVert verts[6] = {0};
+    FgCamParams cp; fg_cam_defaults(&cp);
+    check(!cp.freeze_small_views, "redraw defaults do not freeze small views");
+    fit.ok = 1; fit.nviews = 2;
+    for (int view = 0; view < 2; view++) {
+        const float h = view ? 48.0f : 240.0f;
+        const float cx = view ? 32.0f : 160.0f, cy = view ? 24.0f : 120.0f;
+        fit.v[view].ok = 1; fit.v[view].q[0] = 1.0; fit.v[view].t[0] = 20.0;
+        fit.v[view].area[2] = view ? 64.0f : 320.0f;
+        fit.v[view].area[3] = h;
+        for (int k = 0; k < 3; k++) {
+            p[view].p[k][0] = k == 1 ? 20.0f : 0.0f;
+            p[view].p[k][1] = k == 2 ? 20.0f : 0.0f;
+            p[view].p[k][2] = 200.0f; p[view].h[k] = h;
+            p[view].x[k] = cx + h * p[view].p[k][0] / 200.0f;
+            p[view].y[k] = cy + h * p[view].p[k][1] / 200.0f;
+            verts[view * 3 + k].mode = FG_PLACE_CAMERA;
+            verts[view * 3 + k].view = (int8_t)view;
+        }
+    }
+    FgPrimList list = {p, 2, 2}; float x[6], y[6];
+    for (int freeze = 0; freeze < 2; freeze++) {
+        fit.freeze_small_views = freeze;
+        fg_cam_place(&list, &fit, verts, 0.5, x, y, NULL);
+        check(fabsf(x[0] - p[0].x[0] + 12.0f) < 0.001f, "main view always interpolates");
+        check(fabsf(x[3] - p[1].x[0] + (freeze ? 0.0f : 2.4f)) < 0.001f,
+              freeze ? "opt-in reprojection freezes the inset" : "redraw interpolates the inset");
+        fg_cam_place(&list, &fit, verts, 1.0, x, y, NULL);
+        for (int i = 0; i < 6; i++)
+            check(x[i] == p[i / 3].x[i % 3] && y[i] == p[i / 3].y[i % 3],
+                  "both policies preserve the real-frame endpoint");
+    }
+    /* The fit API propagates the policy; keep_partial alone must not set it. */
+    FgPrimList empty = {0}; cp.keep_partial = 1;
+    fg_cam_fit(&empty, &empty, &cp, &fit, verts);
+    check(!fit.freeze_small_views, "partial fit does not implicitly freeze insets");
+    cp.freeze_small_views = 1;
+    fg_cam_fit(&empty, &empty, &cp, &fit, verts);
+    check(fit.freeze_small_views, "fit propagates explicit reprojection policy");
+}
+
 int main(void) {
+    test_small_view_policy();
+    test_view_affine();
+    test_hud_lerp();
+    test_slots_5994();
+    test_any_rate();
     test_ceiling();
     test_cost();
     test_pace();

@@ -226,6 +226,7 @@ typedef struct DynrtSample {
     double cost_s;     /* their summed cost (see COST) */
     double bp_s;       /* emulation thread blocked on the queue bound */
     int    held;       /* the host holds: not a sample, the window restarts */
+    double generated_cost_s; /* part of cost_s spent on generated frames; 0 without FG */
 } DynrtSample;
 
 typedef struct DynrtController {
@@ -233,10 +234,10 @@ typedef struct DynrtController {
     int    floor, ceiling, level, forced;
     double f;
     /* the window in progress */
-    double win_period, win_wall, win_cost, win_bp;
+    double win_period, win_wall, win_cost, win_bp, win_generated_cost;
     int    win_n, win_frames;
     /* the last closed window */
-    double last_load, last_bp_share, last_hz;
+    double last_load, last_bp_share, last_hz, last_real_load;
     int    last_valid, last_guest_bound, last_over;
     int    over_streak;
     double hold_until;

@@ -409,7 +409,43 @@ static void test_descent_target(void) {
     CHECK(dynrt_descent_target(&c, 0.80, 10) == 9, "target one level");
 }
 
+static void test_generation_window_mix(void) {
+    DynrtParams p; dynrt_default_params(&p);
+    p.window_s = 0.04;
+    DynrtController c; dynrt_init(&c, &p, 1, 1, 1);
+    double now = 0.0;
+    DynrtSample s = { .period_s = 0.02, .wall_s = 0.02, .frames = 1,
+                     .cost_s = 0.02, .generated_cost_s = 0.008 };
+    for (int i = 0; i < 2; i++) dynrt_sample(&c, now += 0.02, &s);
+    CHECK(c.over_streak > 0 && fabs(c.last_load - 1.0) < 1e-9, "mixed window is over budget");
+    CHECK(fabs(c.last_real_load - 0.6) < 1e-9 && c.last_real_load < 1.0 - c.p.margin,
+          "first mixed window does not suppress generation when real work fits");
+    s.generated_cost_s = 0.002;
+    for (int i = 0; i < 2; i++) dynrt_sample(&c, now += 0.02, &s);
+    CHECK(fabs(c.last_real_load - 0.9) < 1e-9 && c.last_real_load >= 1.0 - c.p.margin,
+          "next window uses its current mix, not the previous generation-heavy mix");
+    s.generated_cost_s = 0.0;
+    for (int i = 0; i < 2; i++) dynrt_sample(&c, now += 0.02, &s);
+    CHECK(c.last_real_load == c.last_load, "without generation real and total load are identical");
+    /* Discarded partial work must not leak into the next window. */
+    s.generated_cost_s = 0.008;
+    dynrt_sample(&c, now += 0.02, &s);
+    dynrt_hold(&c, now, 0.0);
+    CHECK(c.win_generated_cost == 0.0, "hold discards the generation mix with its window");
+    s.generated_cost_s = 0.0;
+    for (int i = 0; i < 2; i++) dynrt_sample(&c, now += 0.02, &s);
+    CHECK(c.last_real_load == c.last_load, "discarded generation does not contaminate the next window");
+    /* Combined load still controls down steps, even when real work fits. */
+    p.down_windows = 1;
+    dynrt_init(&c, &p, 1, 4, 4);
+    s.generated_cost_s = 0.008; now = 0.0;
+    for (int i = 0; i < 2; i++) dynrt_sample(&c, now += 0.02, &s);
+    CHECK(c.level < 4 && c.last_real_load < 1.0 - c.p.margin,
+          "generation load can lower resolution without pretending real work alone is over budget");
+}
+
 int main(void) {
+    test_generation_window_mix();
     test_fast_descent_from_ceiling();
     test_fast_descent_rearm();
     test_fast_descent_light_first();
