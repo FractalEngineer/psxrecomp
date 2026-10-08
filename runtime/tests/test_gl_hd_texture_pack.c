@@ -1,5 +1,8 @@
 /* Real GL + real format/decoder + renderer facade. Source-owned fixtures. */
 #define PSX_TEST_HD_TEXTURE_PACK 1
+/* Every presented image (real or generated) passes here before its swap. */
+static void fg_fixture_present(int generated);
+#define GL_PRESENT_TEST_HOOK(gen) fg_fixture_present(gen)
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
 #define STBI_ONLY_JPEG
@@ -140,6 +143,137 @@ static void native_scene(void) {
     gr_set_mask_bits(0,1); gr_vram_transfer_in(40,40,4,1,masked);
     gr_set_mask_bits(0,0);
     gr_fill_rect(1022,510,4,4,0x1234);
+}
+/* Smooth motion with an HD pack: presented images, read back before swap. */
+static int fg_rec = 0;
+static uint64_t fg_real_seq, fg_n_real, fg_n_gen, fg_last_real;
+static int fg_gen_hud_hd, fg_gen_hud_bad, fg_real_hud_hd;
+static uint64_t fg_fnv(const void* p, size_t n, uint64_t h) {
+    const uint8_t* b = (const uint8_t*)p;
+    for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 0x100000001b3ull; }
+    return h;
+}
+static void fg_fixture_present(int generated) {
+    if (!fg_rec) return;
+    int ww = 0, wh = 0;
+    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    uint8_t* px = (uint8_t*)malloc((size_t)ww * wh * 4);
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glReadPixels(0, 0, ww, wh, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    /* Only the HUD can be red: its replacement (native texels are green/black). */
+    int red = 0, green = 0;
+    for (size_t i = 0; i < (size_t)ww * wh; ++i) {
+        const uint8_t* q = px + i * 4;
+        if (q[0] > 200 && q[1] < 40 && q[2] < 40) red++;
+        if (q[1] > 200 && q[0] < 40 && q[2] < 40) green++;
+    }
+    (void)green;
+    const int hd = red > 0;   /* the native texels hold no red */
+    if (generated) { fg_n_gen++; if (hd) fg_gen_hud_hd++; else fg_gen_hud_bad++; }
+    else {
+        uint64_t d = fg_fnv(px, (size_t)ww * wh * 4, 0xcbf29ce484222325ull);
+        if (d != fg_last_real) { fg_last_real = d; fg_real_seq = fg_fnv(&d, sizeof d, fg_real_seq); fg_n_real++; }
+        if (hd) fg_real_hud_hd++;
+    }
+    free(px);
+}
+
+/* MinGW has no setenv/unsetenv. */
+static void fg_force_env(int on) {
+#ifdef _WIN32
+    _putenv(on?"PSX_FRAME_GEN_FORCE=1":"PSX_FRAME_GEN_FORCE=");
+#else
+    if(on) setenv("PSX_FRAME_GEN_FORCE","1",1); else unsetenv("PSX_FRAME_GEN_FORCE");
+#endif
+}
+/* Adversarial review cases (#568): a GP0(A0) payload streams into gpu.c's
+ * array word by word, as gpu.c writes it; the render thread must stay held
+ * until the commit or later payload words are overwritten by the publication
+ * of its private copy. */
+static uint16_t adv_snapshot[1024*512];
+static void adv_payload_word(int x,int y,uint16_t w) { vram[y*1024+x]=w; }
+static void adv_hd_cases(const char* root) {
+    char error[512]={0};
+    uint16_t back=0;
+    const uint16_t done[4]={0x7c00,0x7c01,0x7c02,0x7c03};
+    /* ADV1: HD switched on live while an A0 is still streaming. */
+    gpu_hd_textures_shutdown();
+    check(gl_renderer_render_thread_start(2)==1,"ADV1: render thread starts with HD off");
+    gl_renderer_render_thread_frame_boundary();
+    state(); gr_fill_rect(256,96,4,1,0x2345);
+    gl_renderer_render_thread_frame_boundary();
+    check(!rt_held(),"ADV1: render thread runs before the upload");
+    gr_vram_upload_begin(256,96,4,1);
+    adv_payload_word(256,96,done[0]);
+    check(gpu_hd_textures_configure(root,1,0,error,sizeof(error)),"ADV1: HD opens mid-A0");
+    check(vram[96*1024+256]==done[0],"ADV1: HD activation keeps the received payload word");
+    adv_payload_word(257,96,done[1]);
+    gl_renderer_render_thread_frame_boundary();   /* the payload spans a vblank */
+    check(!s_hd_native_authority,"ADV1: HD authority waits for the streaming A0's commit");
+    adv_payload_word(258,96,done[2]);
+    gl_renderer_render_thread_sync("adv1");       /* a sync point mid-payload */
+    gl_renderer_render_thread_frame_boundary();
+    gl_renderer_render_thread_sync("adv1b");
+    check(vram[96*1024+256]==done[0] && vram[96*1024+257]==done[1] && vram[96*1024+258]==done[2],
+          "ADV1: payload words written before and after HD activation survive");
+    adv_payload_word(259,96,done[3]);
+    gr_vram_upload_commit(256,96,4,1,done);
+    check(s_hd_native_authority,"ADV1: the commit switches to HD authority");
+    gl_renderer_render_thread_frame_boundary();
+    check(!rt_held(),"ADV1: the commit releases the context");
+    state(); gr_fill_rect(264,96,1,1,0x1111);
+    gl_renderer_render_thread_frame_boundary();
+    gr_vram_transfer_out(256,96,4,1,(uint16_t[4]){0});
+    check(!memcmp(&vram[96*1024+256],done,sizeof(done)) && vram[96*1024+264]==0x1111,
+          "ADV1: committed upload stays in native VRAM");
+    /* ADV2a: savestate loaded while an A0 is streaming and resumed mid-A0:
+     * the full-VRAM section (a 1024x512 TRACK_UPLOAD) then gpu.c's GP0 state. */
+    gl_renderer_render_thread_frame_boundary();
+    state(); gr_fill_rect(256,100,4,1,0x2345);
+    gr_vram_upload_begin(256,100,4,1);
+    adv_payload_word(256,100,done[0]);
+    memcpy(adv_snapshot,vram,sizeof(adv_snapshot));   /* saved mid-A0 */
+    gr_vram_transfer_in(0,0,1024,512,adv_snapshot);
+    gr_vram_upload_set_open(1);
+    gl_renderer_render_thread_frame_boundary();
+    check(rt_held(),"ADV2: full-VRAM load mid-A0 keeps the context");
+    adv_payload_word(257,100,done[1]);
+    gl_renderer_render_thread_frame_boundary();
+    gr_vram_transfer_out(259,100,1,1,&back);
+    check(vram[100*1024+256]==done[0] && vram[100*1024+257]==done[1] && back==0x2345,
+          "ADV2: payload words after a mid-A0 load survive");
+    adv_payload_word(258,100,done[2]); adv_payload_word(259,100,done[3]);
+    gr_vram_upload_commit(256,100,4,1,done);
+    gl_renderer_render_thread_frame_boundary();
+    check(!rt_held(),"ADV2: the commit after a load releases the context");
+    /* ADV2b: loaded from an idle, running thread: gpu.c's GP0 state first,
+     * then the full-VRAM section, then the payload resumes. */
+    state(); gr_fill_rect(256,104,4,1,0x2345);
+    gl_renderer_render_thread_frame_boundary();
+    gl_renderer_render_thread_sync("adv-save");   /* a save syncs */
+    memcpy(adv_snapshot,vram,sizeof(adv_snapshot));
+    adv_snapshot[104*1024+256]=done[0];
+    gl_renderer_render_thread_frame_boundary();
+    check(!rt_held(),"ADV2b: render thread runs before the load");
+    gr_vram_upload_set_open(1);
+    gr_vram_transfer_in(0,0,1024,512,adv_snapshot);
+    gl_renderer_render_thread_frame_boundary();
+    check(rt_held(),"ADV2b: a state restored mid-A0 keeps the context");
+    adv_payload_word(257,104,done[1]);
+    gl_renderer_render_thread_frame_boundary();
+    gr_vram_transfer_out(259,104,1,1,&back);
+    check(vram[104*1024+256]==done[0] && vram[104*1024+257]==done[1] && back==0x2345,
+          "ADV2b: loaded VRAM and resumed payload words survive");
+    adv_payload_word(258,104,done[2]); adv_payload_word(259,104,done[3]);
+    gr_vram_upload_commit(256,104,4,1,done);
+    /* A state restored outside A0 ends a streaming upload's hold. */
+    gr_vram_upload_begin(256,108,4,1);
+    gr_vram_upload_set_open(0);
+    gl_renderer_render_thread_frame_boundary();
+    check(!rt_held(),"ADV2: a state restored outside A0 releases the context");
+    gl_renderer_render_thread_stop();
+    check(!memcmp(&vram[104*1024+256],done,sizeof(done)),"ADV2: stop keeps the committed upload");
 }
 static void wait_ready(int st) {
     const int bounds[4]={0,0,3,3};
@@ -356,6 +490,7 @@ int main(int argc,char** argv) {
     check(!gpu_hd_textures_acquire_draw(texture_page,0,0,bounds,0,0,&lease),
           "A0 header invalidates identity even if payload is later aborted");
     gpu_hd_textures_release_image(&lease);
+    gr_vram_upload_set_open(0);   /* GP1(01h) aborts it */
     gr_vram_transfer_in(512,0,4,4,source_words);
     gl_renderer_restage_vram_after_savestate();
     check(!gpu_hd_textures_acquire_draw(texture_page,0,0,bounds,0,0,&lease),
@@ -396,11 +531,63 @@ int main(int argc,char** argv) {
           "Beetle image preserves native draw RGB and source STP");
     gr_draw_textured_rect(8,4,4,4,4,0,0,0,texture_page); capture();
     check(sample(44,16)[1]>200,"Beetle native transparent zero still cuts out replacement");
-    /* HD residency stays synchronous: startup refuses the combination, and
-     * live activation parks an existing thread before switching authority. */
-    check(!gl_renderer_render_thread_start(2),"HD replacements refuse render-thread startup");
-    /* Keep the negative-control run safe when checking an unfixed renderer. */
-    if(gl_renderer_render_thread_active()) gl_renderer_render_thread_stop();
+    /* Render thread: residency follows the recorded command stream and the
+     * render thread's VRAM copy. The emulation thread writes its array and
+     * records the overwrite before the first draw has been replayed; that
+     * draw must still see the upload it was recorded after. */
+    check(gl_renderer_render_thread_start(2)==1,"render thread started with an HD session");
+    for(int frame=0;frame<3;++frame) {
+        state(); gr_fill_rect(0,0,16,16,0x03e0);
+        for(int i=0;i<16;++i) vram[i/4*1024+512+i%4]=source_words[i];
+        gr_vram_transfer_in(512,0,4,4,source_words);
+        gr_draw_textured_rect(4,4,4,4,0,0,0,0,texture_page);
+        for(int i=0;i<16;++i) vram[i/4*1024+512+i%4]=overwrite[i];
+        gr_vram_transfer_in(512,0,4,4,overwrite);
+        gr_draw_textured_rect(8,4,4,4,0,0,0,0,texture_page);
+        gl_renderer_render_thread_frame_boundary();
+    }
+    capture();
+    check(sample(16,16)[0]>200 && sample(16,16)[1]<20,"render thread: replacement drawn from the upload recorded before it");
+    check(sample(32,16)[2]>200 && sample(32,16)[0]<20,"render thread: later overwrite draws the new native source");
+    /* HD authority rasterizes native VRAM on the render thread's copy; a
+     * guest readback (a sync point) must see it in gpu.c's array. */
+    gl_renderer_render_thread_frame_boundary();   /* the capture held the context */
+    check(!rt_held(),"render thread owns the context again");
+    state(); gr_fill_rect(96,96,4,4,0x1234);
+    gr_draw_flat_rect(104,96,4,4,0x0421);
+    gl_renderer_render_thread_frame_boundary();
+    uint16_t back[2]={0,0};
+    gr_vram_transfer_out(96,96,1,1,&back[0]); gr_vram_transfer_out(104,96,1,1,&back[1]);
+    check(back[0]==0x1234 && back[1]==0x0421 && vram[96*1024+96]==0x1234 && vram[96*1024+104]==0x0421,
+          "render thread: guest readback sees native draws under HD authority");
+    /* Review reproduction (#568): a pending A0 keeps only received payload
+     * words, its mask check sees the prior native draw, and stop publishes
+     * the final HD-authoritative draws. */
+    gl_renderer_render_thread_frame_boundary();
+    state(); gr_fill_rect(128,96,4,1,0x2345);
+    gr_vram_upload_begin(128,96,4,1);
+    vram[96*1024+128]=0x7c00;
+    uint16_t partial_read=0;
+    gr_vram_transfer_out(129,96,1,1,&partial_read);
+    check(vram[96*1024+128]==0x7c00,"received A0 word survives");
+    check(partial_read==0x2345,"unwritten A0 word retains earlier draw");
+    uint16_t completed[4]={0x7c00,0x2345,0x2345,0x2345};
+    gr_vram_upload_commit(128,96,4,1,completed);
+    gl_renderer_render_thread_frame_boundary();
+    state(); gr_set_mask_bits(1,0); gr_draw_flat_rect(192,96,4,1,0x0421);
+    gr_set_mask_bits(0,1); gr_vram_upload_begin(192,96,4,1);
+    check(gr_vram_read(192,96)==0x8421,"A0 sees prior native mask");
+    uint16_t masked[4]={0x8421,0x8421,0x8421,0x8421};
+    gr_vram_upload_commit(192,96,4,1,masked);
+    gl_renderer_render_thread_frame_boundary();
+    state(); gr_fill_rect(160,96,4,1,0x4567);
+    gl_renderer_render_thread_frame_boundary();
+    gl_renderer_render_thread_stop();
+    check(vram[96*1024+160]==0x4567,"stop publishes final native draw");
+    /* #570's HD safety cases, with the render thread running instead of
+     * parked: live activation, partial upload across a frame boundary and a
+     * reload, reset after an incomplete upload, dump-only, disable/resume,
+     * and the final native draw at stop. */
     gpu_hd_textures_shutdown();
     check(gl_renderer_render_thread_start(2),"render thread starts with HD disabled");
     gl_renderer_set_frame_generation(1);
@@ -408,57 +595,64 @@ int main(int argc,char** argv) {
     state(); gr_fill_rect(96,96,4,1,0x1234);
     gl_renderer_render_thread_frame_boundary();
     check(gpu_hd_textures_configure(beetle_root,1,0,error,sizeof(error)),"HD opens while render thread is running");
-    check(rt_held(),"HD activation takes and holds the GL context");
     check(vram[96*1024+96]==0x1234,"HD activation retains the queued native draw");
     char fg_diag[4096]; gl_renderer_frame_gen_json(fg_diag,sizeof(fg_diag));
-    check(strstr(fg_diag,"\"active\":0")!=NULL,"Smooth motion is inactive under HD authority");
+    check(strstr(fg_diag,"\"active\":1")!=NULL,"Smooth motion stays active under HD authority");
     gl_renderer_render_thread_frame_boundary();
-    check(rt_held(),"HD replacement mode remains synchronous across frames");
+    check(!rt_held(),"HD replacement mode runs on the render thread");
     state(); gr_fill_rect(128,96,4,1,0x2345);
     gr_vram_upload_begin(128,96,4,1);
     vram[96*1024+128]=0x7c00; /* A partial GP0(A0) payload, as gpu.c writes it. */
-    uint16_t partial_read=0; gr_vram_transfer_out(129,96,1,1,&partial_read);
+    gl_renderer_render_thread_frame_boundary();   /* the payload spans a vblank */
+    check(rt_held(),"an open A0 keeps the context across a frame boundary");
+    partial_read=0; gr_vram_transfer_out(129,96,1,1,&partial_read);
     check(vram[96*1024+128]==0x7c00 && partial_read==0x2345,
           "partial upload preserves payload and preceding native draws");
-    check(gpu_hd_textures_reload(error,sizeof(error)),"HD reload is safe while the thread is parked");
-    check(rt_held() && vram[96*1024+128]==0x7c00 && vram[96*1024+129]==0x2345,
+    check(gpu_hd_textures_reload(error,sizeof(error)),"HD reload is safe during a partial upload");
+    check(vram[96*1024+128]==0x7c00 && vram[96*1024+129]==0x2345,
           "HD reload retains partial-upload VRAM");
-    /* Aborted uploads have no extra private-copy tracking to leave behind. */
-    gr_init(vram); state(); gr_fill_rect(128,96,4,1,0x3456);
+    gr_init(vram); /* reset abandons the incomplete upload */
+    gl_renderer_render_thread_frame_boundary();
+    check(!rt_held(),"reset after an incomplete upload releases the context");
+    state(); gr_fill_rect(128,96,4,1,0x3456);
     gr_vram_transfer_out(128,96,1,1,&partial_read);
     check(partial_read==0x3456,"reset after an incomplete upload keeps native draws visible");
-    gr_set_mask_bits(1,0); gr_draw_flat_rect(192,96,4,1,0x0421);
+    gl_renderer_render_thread_frame_boundary();
+    state(); gr_set_mask_bits(1,0); gr_draw_flat_rect(192,96,4,1,0x0421);
     gr_set_mask_bits(0,1); gr_vram_upload_begin(192,96,4,1);
-    check(gr_vram_read(192,96)==0x8421,
-          "A0 mask check sees the preceding masked native draw");
+    check(gr_vram_read(192,96)==0x8421,"A0 mask check sees the preceding masked native draw");
+    gr_vram_upload_commit(192,96,4,1,masked);
     state();
     gpu_hd_textures_shutdown();
     gl_renderer_render_thread_frame_boundary();
-    check(!rt_held(),"render thread resumes after HD replacements are disabled");
+    check(!rt_held(),"render thread runs after HD replacements are disabled");
     state(); gr_fill_rect(160,96,4,1,0x4567);
     gl_renderer_render_thread_frame_boundary();
     gr_vram_transfer_out(160,96,1,1,&partial_read);
-    check(partial_read==0x4567 && vram[96*1024+160]==0x4567,
-          "resumed rendering retains native readbacks");
+    check(partial_read==0x4567 && vram[96*1024+160]==0x4567,"resumed rendering retains native readbacks");
     gl_renderer_render_thread_frame_boundary();
     check(gpu_hd_textures_configure(argv[1],0,1,error,sizeof(error)),"dump-only session opens with render thread running");
-    check(rt_held(),"texture dumping also parks the render thread");
     gl_renderer_render_thread_frame_boundary();
-    check(rt_held(),"dump-only mode remains synchronous across frames");
-    gr_vram_transfer_in(512,0,4,4,source_words);
-    gr_draw_textured_rect(8,8,4,4,0,0,0,0,texture_page); capture();
-    check(vram[8*1024+8]==source_words[0],"dump-only draw retains native VRAM");
+    check(!rt_held(),"dump-only mode runs on the render thread");
+    state(); gr_vram_upload_begin(512,0,4,4);
+    for(int i=0;i<16;++i) vram[i/4*1024+512+i%4]=source_words[i];
+    gr_vram_upload_commit(512,0,4,4,source_words);
+    gr_draw_textured_rect(8,8,4,4,0,0,0,0,texture_page);
+    gl_renderer_render_thread_frame_boundary();
+    gr_vram_transfer_out(8,8,1,1,&partial_read);
+    check(partial_read==source_words[0] && vram[8*1024+8]==source_words[0],"dump-only draw retains native VRAM");
     gpu_hd_textures_set_dump_enabled(0);
     gl_renderer_render_thread_frame_boundary();
-    check(!rt_held(),"render thread resumes when dumping is disabled");
+    check(!rt_held(),"render thread runs when dumping is disabled");
     gpu_hd_textures_shutdown();
     gl_renderer_set_frame_generation(0);
     check(gpu_hd_textures_configure(beetle_root,1,0,error,sizeof(error)),"HD session restored for teardown checks");
+    gl_renderer_render_thread_frame_boundary();
     state(); gr_fill_rect(224,96,4,1,0x5678);
     gl_renderer_render_thread_frame_boundary();
     gl_renderer_render_thread_stop();
     check(!gl_renderer_render_thread_active(),"thread stops safely after HD transitions");
-    check(vram[96*1024+224]==0x5678,"stopping the parked thread preserves final HD native draws");
+    check(vram[96*1024+224]==0x5678,"stopping the thread preserves final HD native draws");
     /* Restage (savestate, rewind): an upload rectangle seen this session comes
      * back only while its restored words still carry the replacement key. */
     {
@@ -525,6 +719,65 @@ int main(int argc,char** argv) {
         check(sample(16,16)[0]>200 && sample(16,16)[1]<20,"after the load a textured draw shows the HD replacement");
         check(after_draw.applied_draws>before_draw.applied_draws,"the restored upload's draw applied a replacement");
         free(res);
+    }
+    adv_hd_cases(beetle_root);
+    /* Smooth motion with an HD pack: the same 30 Hz game (each frame shown
+     * twice) with generation off, then forced on. Real frames and native VRAM
+     * must be identical, and generated frames show the HD HUD. */
+    {
+        uint64_t seq[3]={0,0,0}, nreal[3]={0,0,0}, vd=0;
+        static uint16_t vsnap[1024*512];
+        state(); gr_vram_transfer_in(512,0,4,4,source_words); wait_ready(0);   /* decode before the thread owns residency */
+        check(gl_renderer_render_thread_start(2)==1,"render thread started for Smooth motion + HD");
+        /* run 0 warms every surface the scene touches (both buffers), so
+         * runs 1 (off) and 2 (on) start from the same renderer state. */
+        for(int run=0;run<3;++run) {
+            gl_renderer_render_thread_frame_boundary();
+            state(); gr_vram_transfer_in(512,0,4,4,source_words);
+            if(run==2) fg_force_env(1);
+            gl_renderer_set_frame_generation(run==2);
+            gl_renderer_frame_gen_configure(120.0,59.94);
+            fg_real_seq=0xcbf29ce484222325ull; fg_n_real=fg_n_gen=fg_last_real=0;
+            fg_gen_hud_hd=fg_gen_hud_bad=fg_real_hud_hd=0;
+            fg_rec=1;
+            for(int g=0;g<16;++g) {
+                const int bx=(g&1)?256:0;
+                state(); gr_set_draw_area(bx,0,bx+63,63);
+                gr_fill_rect(bx,0,64,64,0x1084);
+                gr_draw_flat_rect(bx+20+g,30,8,8,0x7fff);
+                /* GTE-projected scenery panning with the camera (projection
+                 * sources, as gpu.c records them): reprojection's input. */
+                for(int i=0;i<12;++i) {
+                    const int x=bx+2+(i%4)*15+g%4, y=14+(i/4)*16;
+                    uint32_t id[3]; int32_t pc[9], hh[3], xs[3]={x,x+10,x}, ys[3]={y,y,y+10};
+                    for(int k=0;k<3;++k){ id[k]=(uint32_t)(i*3+k+1); pc[3*k]=xs[k]-bx; pc[3*k+1]=ys[k]; pc[3*k+2]=1000; hh[k]=1000; }
+                    gl_renderer_fg_source(id,pc,hh,xs,ys);
+                    gr_draw_flat_triangle(xs[0],ys[0],xs[1],ys[1],xs[2],ys[2],(uint16_t)(0x0842*(i%3+1)));
+                }
+                gr_draw_textured_rect(bx+4,4,4,4,0,0,0,0,texture_page);
+                for(int k=0;k<2;++k) {
+                    gl_renderer_present_vram(bx,0,64,64,0,0);
+                    gl_renderer_render_thread_frame_boundary();
+                }
+            }
+            gl_renderer_render_thread_sync("fg-hd");
+            fg_rec=0;
+            seq[run]=fg_real_seq; nreal[run]=fg_n_real;
+            if(run==1) memcpy(vsnap,vram,sizeof(vsnap));
+            if(run==2) vd=memcmp(vsnap,vram,sizeof(vsnap));
+            if(run==2) printf("fg-hd: real=%llu generated=%llu gen_hud_hd=%d gen_hud_bad=%d real_hud_hd=%d\n",
+                (unsigned long long)fg_n_real,(unsigned long long)fg_n_gen,fg_gen_hud_hd,fg_gen_hud_bad,fg_real_hud_hd);
+        }
+        fg_force_env(0);
+        gl_renderer_set_frame_generation(0);
+        gl_renderer_render_thread_stop();
+        check(nreal[1]>=8 && seq[1]==seq[2] && nreal[1]==nreal[2],"Smooth motion + HD: real frames identical");
+        check(vd==0,"Smooth motion + HD: generated frames write no native VRAM");
+        check(fg_real_hud_hd>0,"Smooth motion + HD: real HUD is the HD replacement");
+        if(!s_hiw) {
+            check(fg_n_gen>0,"Smooth motion + HD: in-between frames generated");
+            check(fg_gen_hud_hd>0 && fg_gen_hud_bad==0,"Smooth motion + HD: generated HUD is the HD replacement");
+        }
     }
     memcpy(reference,vram,sizeof(vram));
     gl_renderer_set_cpu_auth_dual(1);

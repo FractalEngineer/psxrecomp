@@ -226,8 +226,9 @@ std::shared_ptr<Composition> compose(const HdTextureDrawQuery& query,
     session->compositions.push_back(result); session->composition_bytes += bytes;
     return result;
 }
+bool dumps_suppressed = false;
 void dump_query(const HdTextureDrawQuery& query, int semi) {
-    if (!session->dump || session->dump_failed) return;
+    if (!session->dump || session->dump_failed || dumps_suppressed) return;
     char error[256]{};
     const int status = duck_texture_pack_dump_draw(session->duck, &query, semi, error, sizeof(error));
     if (status == HD_TEXTURE_LOOKUP_FOUND) ++session->diag.dumped_textures;
@@ -264,6 +265,10 @@ extern "C" int gpu_hd_textures_configure(const char* root, int replacements,
             std::filesystem::create_directories(directory / "dumps");
         }
         if (!duck_texture_pack_create(root, &next->duck, error, capacity)) return 0;
+        /* Quiesce renderer users (GL render thread: dump_draw appends to the
+         * old session's sources) before flushing its dumps or reading its
+         * residency; the cache is rebuilt from the new session. */
+        if (session) gl_renderer_clear_hd_texture_cache();
         if (session) {
             char dump_error[256]{};
             if (duck_texture_pack_flush_dumps(session->duck, dump_error, sizeof(dump_error)) < 0) {
@@ -321,6 +326,8 @@ extern "C" int gpu_hd_textures_reload(char* error, size_t capacity) {
 }
 extern "C" void gpu_hd_textures_set_dump_enabled(int enabled) {
     if (!session || session->dump == (enabled != 0)) return;
+    /* The render thread may be dumping (dump_draw) or tracking residency. */
+    gl_renderer_render_thread_sync("hd_set_dump");
     if (enabled && !session->replacements) gpu_hd_textures_reset_tracking();
     if (!enabled) {
         char error[256]{};
@@ -339,6 +346,8 @@ extern "C" void gpu_hd_textures_get_diag(GpuHdTextureDiag* out) {
     if (!out) return;
     *out = {};
     if (!session) { out->root = ""; out->diagnostic = ""; return; }
+    /* Counters and dump queues are written by the GL render thread. */
+    gl_renderer_render_thread_sync("hd_diag");
     *out = session->diag;
     out->root = session->root.c_str(); out->active = gpu_hd_textures_active();
     out->replacements = session->replacements; out->dump = session->dump && !session->dump_failed;
@@ -357,6 +366,8 @@ extern "C" void gpu_hd_textures_get_diag(GpuHdTextureDiag* out) {
     out->diagnostic = session->diagnostics.back().c_str();
 }
 extern "C" void gpu_hd_textures_note_applied(void) { if (session) ++session->diag.applied_draws; }
+extern "C" void gpu_hd_textures_bind_vram(const uint16_t* vram) { native_vram = vram; }
+extern "C" void gpu_hd_textures_suppress_dumps(int on) { dumps_suppressed = on != 0; }
 extern "C" void gpu_hd_textures_set_vram(const uint16_t* vram) { native_vram = vram; gpu_hd_textures_reset_tracking(); }
 extern "C" void gpu_hd_textures_reset_tracking(void) {
     if (!session) return;
@@ -428,7 +439,8 @@ extern "C" void gpu_hd_textures_invalidate(int x, int y, int width, int height) 
 }
 extern "C" void gpu_hd_textures_track_upload(int x, int y, int width, int height,
                                              const uint16_t* words) {
-    if (!session || !native_vram || !words || width < 1 || width > 1024 || height < 1 || height > 512) return;
+    (void)words;
+    if (!session || !native_vram || width < 1 || width > 1024 || height < 1 || height > 512) return;
     if (width == 1024 && height == 512) { gpu_hd_textures_reset_tracking(); return; }
     /* gpu.c's A0 staging already contains post-mask words. Read the canonical
      * mirror here also for host-initiated transfers which use raw input. */

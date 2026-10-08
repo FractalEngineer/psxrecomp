@@ -455,12 +455,31 @@ enum {
     RTH_WIDE_DISABLE, RTH_WIDE_CLEAR, RTH_WIDE_CLEAR_MARGINS, RTH_PROJ_TRI,
     RTH_WIDE_RECOVERY, RTH_INTERP_SUSPENDED, RTH_PRESENT_VRAM,
     RTH_PRESENT_WIDE, RTH_STATE, RTH_PEEK, RTH_RING_CAPTURE, RTH_DYN_STEP,
-    RTH_FRAME, RTH_FG_SRC, RTH_DEPTH
+    RTH_FRAME, RTH_FG_SRC, RTH_DEPTH, RTH_HD_NOTE
 };
+/* GP0(A0) whose payload gpu.c is still streaming into its array (the
+ * facade's vram_upload_open, emulation thread), tracked whatever the HD
+ * state: under HD authority the emulation thread holds the context from the
+ * header, or from the authority switch, to the commit. A residency note
+ * (even a full-VRAM TRACK_UPLOAD) never ends it; only the commit, GP1(01h),
+ * a reset or a savestate restored outside A0 do. */
+static int s_rth_a0_open = 0;
+/* HD authority requested while an A0 streams under GPU authority: its
+ * received words exist only in gpu.c's array (the FBO gets the whole rect at
+ * the commit), so ensure_cpu's readback would overwrite them. The switch
+ * waits for the commit, which ends the upload in both copies. */
+static int s_hd_authority_pending = 0;
+
 static int  rth_record_mode(void);
 /* Render-thread frame cost (dynamic resolution; defined with GL_RT_BACKEND). */
 static uint64_t s_rthf_swap_ns = 0;        /* render thread: time in the swap */
 static uint64_t host_now_ns_rthf(void);
+/* The SW rasterizer and the HD texture residency read the same native VRAM
+ * copy as the GL backend (gpu.c's array, or the render thread's private one). */
+static void rth_rebind_vram(uint16_t *vram) {
+    sw_renderer_rebind_vram(vram);
+    gpu_hd_textures_bind_vram(vram);
+}
 static int  rth_rec_ints(uint16_t op, uint16_t flags, int n, const int32_t *v);
 static uint16_t rth_prim_flags(void);
 static int  rth_record_present(uint16_t op, int n, const int32_t *v);
@@ -3082,6 +3101,8 @@ static size_t s_hd_gl_cache_bytes;
 static uint64_t s_hd_gl_cache_clock;
 
 void gl_renderer_clear_hd_texture_cache(void) {
+    /* Pack (re)configuration: the render thread must be idle before the
+     * session and its replacement textures change. */
     GL_RT_SYNC("clear_hd_texture_cache");
     flush_flat_batch(); flush_tex_batch(); hiw_flush_queue();
     for (int i = 0; i < HD_GL_CACHE_CAP; ++i) {
@@ -6108,11 +6129,14 @@ void gl_renderer_set_cpu_auth_dual(int on) {
 }
 
 void gl_renderer_set_hd_texture_mode(int on) {
-    /* Residency and CPU-authoritative VRAM stay on the emulation thread.
-     * Drain the GPU-authoritative stream before entering that mode; the
-     * eligibility gate below keeps the render thread parked until HD is off. */
+    /* Drain the GPU-authoritative stream before switching authority. */
     GL_RT_SYNC("set_hd_texture_mode");
     on = on ? 1 : 0;
+    s_hd_authority_pending = 0;
+    if (on && !s_hd_native_authority && s_rth_a0_open && s_raster_ok) {
+        s_hd_authority_pending = 1;
+        return;
+    }
     if (on == s_hd_native_authority) return;
     if (s_raster_ok) {
         flush_flat_batch(); flush_tex_batch(); flush_cpu_upload(); hiw_flush_queue();
@@ -6124,11 +6148,11 @@ void gl_renderer_set_hd_texture_mode(int on) {
         }
     }
     s_hd_native_authority = on;
-    if (on && s_rth_on) {
-        fprintf(stdout, "psxrecomp: HD textures/dumping use synchronous rendering; "
-                        "render thread and Smooth motion paused until HD is off\n");
-        fflush(stdout);
-    }
+    /* An A0 still streaming keeps its hold (s_rth_a0_open): the context was
+     * just taken above, and eligibility keeps it until the commit. */
+    /* Smooth motion restarts its lists: their draws resolve textures under
+     * the authority they were recorded in. */
+    s_fg_broken = 1;
     s_gpu_dirty = 0; rect_clear(&s_cpu_dirty);
     if (on) s_selected_bank_tex = 0;
 }
@@ -10240,17 +10264,29 @@ static uint16_t rth_prim_flags(void) {
 
 static int gl_rth_eligible(void) {
     extern int psx_netplay_active(void);
-    return s_raster_ok && s_ctx && !s_cpu_auth_dual && !s_hd_native_authority && !s_depth24_skip_up &&
+    return s_raster_ok && s_ctx && !s_cpu_auth_dual && !s_depth24_skip_up &&
+           !(s_hd_native_authority && s_rth_a0_open) &&
            !gpu_display_is_depth24() && !s_interp_enabled && !s_pass_active &&
            !psx_netplay_active() && !psx_openxr_session_active() &&
            gr_backend() == GR_BACKEND_OPENGL;
 }
 
+/* HD texture authority keeps native VRAM on the CPU raster, which runs on
+ * the render thread's private copy: hand its result to gpu.c's array, the
+ * way ensure_cpu reads the FBO back otherwise. Called only with the render
+ * thread drained and not held, so the private copy is the whole native
+ * VRAM: no A0 payload can be streaming (its header takes the context). */
+static void rth_hd_publish_private(void) {
+    if (!s_hd_native_authority) return;
+    memcpy(s_rth_vram_pub, s_rth_vram_priv, (size_t)VRAM_W * VRAM_H * sizeof(uint16_t));
+}
+
 static void gl_rth_acquire(const char *reason) {
     if (!s_rth_on || rt_on_render_thread() || rt_held()) return;
     rt_acquire(reason);
+    rth_hd_publish_private();
     s_vram = s_rth_vram_pub;
-    sw_renderer_rebind_vram(s_rth_vram_pub);
+    rth_rebind_vram(s_rth_vram_pub);
 }
 
 static void gl_rth_release(void) {
@@ -10259,7 +10295,7 @@ static void gl_rth_release(void) {
      * thread continues from a copy of it. */
     memcpy(s_rth_vram_priv, s_rth_vram_pub, (size_t)VRAM_W * VRAM_H * sizeof(uint16_t));
     s_vram = s_rth_vram_priv;
-    sw_renderer_rebind_vram(s_rth_vram_priv);
+    rth_rebind_vram(s_rth_vram_priv);
     rth_mirror_resync();
     rt_release();
 }
@@ -12017,7 +12053,9 @@ static int fg_generate(double t, int swap) {
     }
     /* Reprojected: only the cars are drawn again (their own motion). */
     s_fg_replay_objects_only = reproj;
+    gpu_hd_textures_suppress_dumps(1);   /* presentation only: dumps see real frames */
     fg_replay(s_fg_src_older ? b : a, L, tl, iw >= 0 ? s_fg_w_fbo : 0);
+    gpu_hd_textures_suppress_dumps(0);
     s_fg_replay_objects_only = 0;
     flush_line_batch();
     flush_flat_batch();
@@ -12632,7 +12670,7 @@ int gl_renderer_frame_gen_json(char *out, int cap) {
         "\"place_camera\":%u,\"place_object\":%u,\"place_neighbour\":%u,"
         "\"place_unchanged\":%u,\"cam_angle_deg\":%.3f,\"cam_shift\":%.1f,"
         "\"clamped\":%u,\"guessed\":%u,\"verdict_ok\":%d,\"rejected\":%llu,\"reject_why\":\"%s\",\"noplan_why\":\"%s\",\"rp_ms\":[%.3f,%.3f,%.3f],\"rp_zn\":%u,\"reprojected\":%llu,\"reproject_fallback\":%llu,\"reproject\":%d,\"np\":[%llu,%llu,%llu,%llu],\"end_ahead\":%llu,\"end_bp\":%llu,\"end_phase\":%llu",
-        s_fg_on, s_fg_on && s_rth_on && !s_hd_native_authority && open, s_fg_force,
+        s_fg_on, s_fg_on && s_rth_on && open, s_fg_force,
         (unsigned long long)s_fg_generated, (unsigned long long)s_fg_real_presents,
         (unsigned long long)s_fg_flips, (unsigned long long)s_fg_dups,
         (unsigned long long)s_fg_flushed, (unsigned long long)s_fg_skipped_plan,
@@ -12670,8 +12708,10 @@ int gl_renderer_frame_gen_json(char *out, int cap) {
 static void rtb_init(uint16_t *vram) {
     GL_RT_SYNC("init");
     if (s_rth_on) s_rth_vram_pub = vram;
+    s_rth_a0_open = 0;   /* a reset abandons an incomplete A0 */
     glb_init(vram);
-    if (s_rth_on && !rt_held()) sw_renderer_rebind_vram(s_rth_vram_priv);
+    if (s_hd_authority_pending) gl_renderer_set_hd_texture_mode(1);
+    if (s_rth_on && !rt_held()) rth_rebind_vram(s_rth_vram_priv);
 }
 static void rtb_set_scale(int sc) { GL_RT_SYNC("set_scale"); glb_set_scale(sc); }
 /* The scale changes under a sync point, or by a recorded dynamic-resolution
@@ -12786,6 +12826,27 @@ static void rtb_vram_transfer_in(int x, int y, int w, int h, const uint16_t *d) 
     }
     glb_vram_transfer_in(x, y, w, h, d);
 }
+static void hd_note_exec(int op, int x, int y, int w, int h, int sx, int sy) {
+    switch (op) {
+    case GR_HD_NOTE_TRACK_UPLOAD: gpu_hd_textures_track_upload(x, y, w, h, NULL); break;
+    case GR_HD_NOTE_BEGIN_UPLOAD: gpu_hd_textures_begin_upload(x, y, w, h); break;
+    case GR_HD_NOTE_BEGIN_COPY:   gpu_hd_textures_begin_copy(sx, sy, x, y, w, h); break;
+    case GR_HD_NOTE_END_COPY:     gpu_hd_textures_end_copy(); break;
+    default:                      gpu_hd_textures_invalidate(x, y, w, h); break;
+    }
+}
+/* After the upload/draw it follows, in command order, against s_vram. */
+static void rtb_vram_upload_open(int open) {
+    s_rth_a0_open = open;
+    if (!open && s_hd_authority_pending) gl_renderer_set_hd_texture_mode(1);
+    /* gpu.c streams the payload into its array and reads it back for
+     * mask-checked words: under HD authority take the context so that array
+     * holds every earlier native draw, and keep it until the commit
+     * (eligibility). Also when a savestate restores a state mid-A0. */
+    if (open && s_hd_native_authority) GL_RT_SYNC("hd_upload");
+}
+static void rtb_hd_texture_note(int op, int x, int y, int w, int h, int sx, int sy) {
+    RTH_DIRECT_OR(RTH_REC(RTH_HD_NOTE, 0, op, x, y, w, h, sx, sy)); hd_note_exec(op, x, y, w, h, sx, sy); }
 static void rtb_vram_transfer_out(int x, int y, int w, int h, uint16_t *d) {
     GL_RT_SYNC("vram_transfer_out"); glb_vram_transfer_out(x, y, w, h, d); }
 static void rtb_set_draw_area(int x1, int y1, int x2, int y2) {
@@ -12889,6 +12950,8 @@ static const GpuRenderBackend GL_RT_BACKEND = {
     .render_wide_display = rtb_render_wide_display,
     .wide_dump_full = rtb_wide_dump_full,
     .set_depth_triangle = rtb_set_depth_triangle,
+    .hd_texture_note = rtb_hd_texture_note,
+    .vram_upload_open = rtb_vram_upload_open,
 };
 
 /* ---- replay (render thread) ---------------------------------------------- */
@@ -12953,6 +13016,7 @@ static void gl_rth_exec(void *user, const RtCmd *c, const void *payload) {
         break;
     case RTH_VRAM_WRITE: glb_vram_write(v[0], v[1], (uint16_t)v[2]); break;
     case RTH_XFER_IN:   glb_vram_transfer_in(v[0], v[1], v[2], v[3], (const uint16_t *)(v + 4)); break;
+    case RTH_HD_NOTE:   hd_note_exec(v[0], v[1], v[2], v[3], v[4], v[5], v[6]); break;
     case RTH_AREA:      glb_set_draw_area(v[0], v[1], v[2], v[3]); break;
     case RTH_OFFSET:    glb_set_draw_offset(v[0], v[1]); break;
     case RTH_WIDE_CONFIGURE: glb_wide_configure(v[0], v[1]); break;
@@ -13033,7 +13097,7 @@ int gl_renderer_render_thread_start(int max_frames) {
     s_rthe_flat_bd = s_rthe_vp_w = s_rthe_bg_full = -1;
     rth_mirror_resync();
     s_vram = priv;
-    sw_renderer_rebind_vram(priv);
+    rth_rebind_vram(priv);
     s_rth_on = 1;
     RtConfig cfg;
     cfg.ring_bytes = (size_t)32u << 20;
@@ -13048,7 +13112,7 @@ int gl_renderer_render_thread_start(int max_frames) {
         pt_end();
         s_rth_on = 0;
         s_vram = s_rth_vram_pub;
-        sw_renderer_rebind_vram(s_rth_vram_pub);
+        rth_rebind_vram(s_rth_vram_pub);
         free(priv);
         s_rth_vram_priv = NULL;
         return 0;
@@ -13059,11 +13123,14 @@ int gl_renderer_render_thread_start(int max_frames) {
 
 void gl_renderer_render_thread_stop(void) {
     if (!s_rth_on) return;
+    const int held = rt_held();
     rt_stop();                       /* drains; the context is current here again */
     pt_end();
+    /* Unheld, the private copy holds the final HD-authoritative draws. */
+    if (!held) rth_hd_publish_private();
     s_rth_on = 0;
     s_vram = s_rth_vram_pub;
-    sw_renderer_rebind_vram(s_rth_vram_pub);
+    rth_rebind_vram(s_rth_vram_pub);
     free(s_rth_vram_priv);
     s_rth_vram_priv = NULL;
     gr_refresh_backend();
