@@ -463,10 +463,10 @@ int main(int argc, char **argv) {
                 glPixelStorei(GL_PACK_ALIGNMENT, 4);
                 glReadPixels(0, 0, dw, dh, GL_DEPTH_COMPONENT, GL_FLOAT, dep);
                 p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
-                long near = 0;
-                for (long i = 0; i < (long)dw * dh; i++) near += dep[i] < 0.9999f;
-                printf("pgxp depth_written_px=%ld of %d\n", near, dw * dh);
-                check(near * 20 < (long)dw * dh, "pgxp: no warp depth left for the cars (<5%)");
+                long near_count = 0;
+                for (long i = 0; i < (long)dw * dh; i++) near_count += dep[i] < 0.9999f;
+                printf("pgxp depth_written_px=%ld of %d\n", near_count, dw * dh);
+                check(near_count * 20 < (long)dw * dh, "pgxp: no warp depth left for the cars (<5%)");
                 free(dep);
             }
             if (getenv("FG_ZDBG")) {   /* the depth image's pixel kinds */
@@ -485,10 +485,10 @@ int main(int argc, char **argv) {
             s_fg_reproject = 1;
             check(fg_generate(0.5, 0) == 1, "reprojected again at phase 0.5");
             read_back(img);
-            long far = 0, far_newer = 0, none = 0, hud = 0, hud_bad = 0;
+            long far_count = 0, far_newer = 0, none = 0, hud = 0, hud_bad = 0;
             for (int i = 0; i < ww * wh; i++) {
                 const int f = px_far(img[i], ref[i]);
-                far += f;
+                far_count += f;
                 far_newer += px_far(img_last[1][i], ref[i]);
                 none += f && px_far(img[i], img_last[0][i]) && px_far(img[i], img_last[1][i]);
                 /* The HUD bar (near white in both real frames, where no
@@ -499,14 +499,14 @@ int main(int argc, char **argv) {
                 }
             }
             printf("reproject_vs_redraw far_px=%ld newer_vs_redraw=%ld unfilled_px=%ld hud_px=%ld "
-                   "hud_changed=%ld of %d\n", far, far_newer, none, hud, hud_bad, ww * wh);
+                   "hud_changed=%ld of %d\n", far_count, far_newer, none, hud, hud_bad, ww * wh);
             /* With a real pan (FG_PAN; one pixel is half a pixel at phase 0.5,
              * below what a warp at native resolution resolves) the warp moved
              * the picture: close to the redraw, much closer than the newer
              * frame it started from. */
             if (g_pan > 1) {
-                check(far * 20 < (long)ww * wh, "reprojection: phase 0.5 matches the redraw (<5% differ)");
-                check(far_newer * 50 > (long)ww * wh && far * 2 < far_newer,
+                check(far_count * 20 < (long)ww * wh, "reprojection: phase 0.5 matches the redraw (<5% differ)");
+                check(far_newer * 50 > (long)ww * wh && far_count * 2 < far_newer,
                       "reprojection: the warp follows the camera (under half the newer frame's difference)");
             }
             check(none * 100 < (long)ww * wh, "reprojection: no holes, every pixel from a real frame or the redraw (<1%)");
