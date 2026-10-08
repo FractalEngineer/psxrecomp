@@ -107,7 +107,11 @@ void host_sampler_start(void) {
 #elif defined(__linux__) || defined(__APPLE__)
 #include <signal.h>
 #include <sys/time.h>
+#if defined(__APPLE__)
+#include <sys/ucontext.h>   /* <ucontext.h> errors without _XOPEN_SOURCE */
+#else
 #include <ucontext.h>
+#endif
 #include <pthread.h>
 #include <dlfcn.h>
 
