@@ -288,6 +288,10 @@ extern "C" int gpu_hd_textures_configure(const char* root, int replacements,
                 const int restored = hd_texture_pack_tracking_state_load(next->beetle, saved, saved_size);
                 std::free(saved);
                 if (!restored) { fail(error, capacity, "Could not restore Beetle texture-upload tracking during reload."); return 0; }
+                /* Restage after rewind/load rehashes these bounded upload
+                 * rectangles against restored VRAM. A same-pack reload must
+                 * preserve that knowledge as well as current residency. */
+                next->learned = session->learned;
             }
         }
         /* This also flushes all queued users before old replacement textures

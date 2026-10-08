@@ -1498,11 +1498,20 @@ static const char *POST_AA_FS =
 
 int gl_renderer_set_post_aa(int mode) {
     if (mode < GL_POST_AA_OFF || mode > GL_POST_AA_FXAA_HQ) mode = GL_POST_AA_OFF;
-    s_post_aa = mode;   /* read by the GL thread at the next present */
+    /* Live debug/launcher changes use the same context-ownership handoff as
+     * the other renderer settings, never racing an in-flight present. */
+    GL_RT_SYNC("post_aa");
+    s_post_aa = mode;
     return 1;
 }
-int gl_renderer_post_aa(void) { return s_post_aa; }
-uint64_t gl_renderer_post_aa_passes(void) { return s_paa_passes; }
+int gl_renderer_post_aa(void) {
+    GL_RT_SYNC("post_aa");
+    return s_post_aa;
+}
+uint64_t gl_renderer_post_aa_passes(void) {
+    GL_RT_SYNC("post_aa_stats");
+    return s_paa_passes;
+}
 
 static void post_aa_release(void) {
     s_paa_prog = 0; s_paa_tex = 0; s_paa_tw = s_paa_th = 0; s_paa_failed = 0;
@@ -1583,6 +1592,7 @@ static void post_aa_apply(int lx, int ly, int lw, int lh) {
  * PSX_POST_AA_TIME=N; 0 otherwise). Resets the mean. */
 double gl_renderer_post_aa_gpu_us(void) {
 #ifndef PSX_NO_DEBUG_TOOLS
+    GL_RT_SYNC("post_aa_stats");
     double m = s_paa_gpu_n ? s_paa_gpu_us_sum / (double)s_paa_gpu_n : 0.0;
     s_paa_gpu_us_sum = 0.0; s_paa_gpu_n = 0;
     return m;
@@ -10868,7 +10878,12 @@ static uint64_t  s_fg_q_cpu[4];
 /* Measured generated frames (GPU time or CPU wall, the larger) for dynamic
  * resolution's load: their summed cost and how many were measured. */
 static _Atomic uint64_t s_fg_gen_cost_ns = 0, s_fg_gen_measured = 0;
-static uint64_t  s_fg_generated = 0, s_fg_real_presents = 0, s_fg_flips = 0,
+/* Counts are consumed by the emulation thread's production controller, not
+ * just diagnostics. The sequence publishes each measured count/cost pair
+ * coherently (one RT writer); all payload fields are atomic as well. */
+static _Atomic unsigned s_fg_gen_cost_seq = 0;
+static _Atomic uint64_t s_fg_generated = 0, s_fg_real_presents = 0;
+static uint64_t  s_fg_flips = 0,
                  s_fg_flushed = 0, s_fg_skipped_plan = 0, s_fg_dups = 0;
 static int       s_fg_last_n = 0, s_fg_last_slots = 0;
 static const char *s_fg_noplan_why = "";
@@ -12346,6 +12361,13 @@ static void fg_overload(void) {
     fg_ceiling_trip(fg_ceil(), s_fg_pending ? s_fg_n : s_fg_last_n, fg_now_s());
 }
 
+static void fg_gen_cost_publish(uint64_t cost_ns) {
+    atomic_fetch_add(&s_fg_gen_cost_seq, 1);
+    atomic_fetch_add(&s_fg_gen_cost_ns, cost_ns);
+    atomic_fetch_add(&s_fg_gen_measured, 1);
+    atomic_fetch_add(&s_fg_gen_cost_seq, 1);
+}
+
 static void fg_gen_cost_poll(void) {
     while (s_fg_qt != s_fg_qh) {
         const unsigned i = s_fg_qt % 4u;
@@ -12356,8 +12378,7 @@ static void fg_gen_cost_poll(void) {
         double c = (double)(ns > s_fg_q_cpu[i] ? ns : s_fg_q_cpu[i]) * 1e-9;
         fg_cost_add(fg_cost(), c, s_fg_fit_s);
         atomic_store(&s_fg_cost_ema_pub, fg_cost()->ema);
-        atomic_fetch_add(&s_fg_gen_cost_ns, (uint64_t)(c * 1e9));
-        atomic_fetch_add(&s_fg_gen_measured, 1);
+        fg_gen_cost_publish((uint64_t)(c * 1e9));
         s_fg_gen_gpu_ms = (double)ns * 1e-6;
         s_fg_gen_cpu_ms = (double)s_fg_q_cpu[i] * 1e-6;
         s_fg_qt++;
@@ -12670,6 +12691,7 @@ static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stal
     FgCamParams cp;
     fg_cam_defaults(&cp);
     cp.keep_partial = s_fg_reproject;
+    cp.freeze_small_views = s_fg_reproject;
     /* Reprojection redraws whatever moves on its own (a rival car filling
      * half of a split-screen view), so a third of the pairs is enough. */
     if (s_fg_reproject) cp.min_inliers = 0.3f;
@@ -12848,9 +12870,19 @@ void gl_renderer_frame_gen_counts(uint64_t *generated, uint64_t *real_presents) 
 }
 
 void gl_renderer_frame_gen_costs(uint64_t *generated, uint64_t *measured, uint64_t *cost_ns) {
-    if (generated) *generated = s_fg_generated;
-    if (measured) *measured = atomic_load(&s_fg_gen_measured);
-    if (cost_ns) *cost_ns = atomic_load(&s_fg_gen_cost_ns);
+    unsigned before, after;
+    uint64_t count, cost;
+    do {
+        before = atomic_load(&s_fg_gen_cost_seq);
+        if (before & 1u) continue;
+        count = atomic_load(&s_fg_gen_measured);
+        cost = atomic_load(&s_fg_gen_cost_ns);
+        after = atomic_load(&s_fg_gen_cost_seq);
+        if (before == after) break;
+    } while (1);
+    if (generated) *generated = atomic_load(&s_fg_generated);
+    if (measured) *measured = count;
+    if (cost_ns) *cost_ns = cost;
 }
 
 int gl_renderer_frame_gen_json(char *out, int cap) {

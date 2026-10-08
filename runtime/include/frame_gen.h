@@ -83,6 +83,7 @@ typedef struct FgCamParams {
     float    max_obj;        /* object pairing: |b - a| < max_obj * |b.z| */
     int      keep_partial;   /* a view that fails leaves its vertices unchanged; the
                               * fit is ok when any view is (reprojection) */
+    int      freeze_small_views; /* reprojection-only inset policy; off for redraw */
 } FgCamParams;
 void fg_cam_defaults(FgCamParams *p);
 
@@ -97,6 +98,7 @@ typedef struct FgView {
 
 typedef struct FgCamFit {
     int      ok;
+    int      freeze_small_views;
     const char *why;
     uint32_t nviews, prims, camera, object, neighbour, unchanged;
     uint32_t clamped;        /* fg_cam_place: vertices the in-between camera passes (frame rejected) */

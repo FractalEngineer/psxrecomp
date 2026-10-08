@@ -46,6 +46,7 @@ void fg_cam_defaults(FgCamParams *p) {
     p->max_shift = 0.5f;
     p->max_obj = 0.25f;
     p->keep_partial = 0;
+    p->freeze_small_views = 0;
 }
 
 /* ---- rigid motion ---- */
@@ -293,6 +294,7 @@ done:
 int fg_cam_fit(const FgPrimList *older, const FgPrimList *newer, const FgCamParams *p,
                FgCamFit *fit, FgVert *verts) {
     memset(fit, 0, sizeof *fit);
+    fit->freeze_small_views = p->freeze_small_views;
     fit->prims = newer->n;
     for (uint32_t j = 0; j < newer->n * 3u; j++) {
         verts[j].mode = FG_PLACE_UNCHANGED; verts[j].view = -1; verts[j].paired = 0;
@@ -618,11 +620,11 @@ void fg_cam_place(const FgPrimList *newer, FgCamFit *fit, const FgVert *verts,
     free(done);
     fit->clamped = clamped;
     fit->guessed = guessed;
-    /* Small views (a rear-view mirror inside the main view) stay as the
+    /* Opt-in reprojection policy only: small views stay as the
      * real frame drew them: their camera is fitted from a few dozen
      * vertices, and a wrong fit threw their lane marks across the screen as
      * a dashed line. At this size their 30 Hz motion does not show. */
-    {
+    if (fit->freeze_small_views) {
         float big = 0.0f;
         for (uint32_t vi = 0; vi < fit->nviews; vi++) {
             const float *ar = fit->v[vi].area;

@@ -447,7 +447,53 @@ static void test_view_affine(void) {
           "t = 0: the older frame's position");
 }
 
+/* A 320x240 main view and a 64x48 inset with the same valid camera motion.
+ * The inset must still interpolate in redraw; only opt-in reprojection
+ * freezes it. Zero-initialized fits also keep the default redraw policy. */
+static void test_small_view_policy(void) {
+    FgPrim p[2] = {0}; FgCamFit fit = {0}; FgVert verts[6] = {0};
+    FgCamParams cp; fg_cam_defaults(&cp);
+    check(!cp.freeze_small_views, "redraw defaults do not freeze small views");
+    fit.ok = 1; fit.nviews = 2;
+    for (int view = 0; view < 2; view++) {
+        const float h = view ? 48.0f : 240.0f;
+        const float cx = view ? 32.0f : 160.0f, cy = view ? 24.0f : 120.0f;
+        fit.v[view].ok = 1; fit.v[view].q[0] = 1.0; fit.v[view].t[0] = 20.0;
+        fit.v[view].area[2] = view ? 64.0f : 320.0f;
+        fit.v[view].area[3] = h;
+        for (int k = 0; k < 3; k++) {
+            p[view].p[k][0] = k == 1 ? 20.0f : 0.0f;
+            p[view].p[k][1] = k == 2 ? 20.0f : 0.0f;
+            p[view].p[k][2] = 200.0f; p[view].h[k] = h;
+            p[view].x[k] = cx + h * p[view].p[k][0] / 200.0f;
+            p[view].y[k] = cy + h * p[view].p[k][1] / 200.0f;
+            verts[view * 3 + k].mode = FG_PLACE_CAMERA;
+            verts[view * 3 + k].view = (int8_t)view;
+        }
+    }
+    FgPrimList list = {p, 2, 2}; float x[6], y[6];
+    for (int freeze = 0; freeze < 2; freeze++) {
+        fit.freeze_small_views = freeze;
+        fg_cam_place(&list, &fit, verts, 0.5, x, y, NULL);
+        check(fabsf(x[0] - p[0].x[0] + 12.0f) < 0.001f, "main view always interpolates");
+        check(fabsf(x[3] - p[1].x[0] + (freeze ? 0.0f : 2.4f)) < 0.001f,
+              freeze ? "opt-in reprojection freezes the inset" : "redraw interpolates the inset");
+        fg_cam_place(&list, &fit, verts, 1.0, x, y, NULL);
+        for (int i = 0; i < 6; i++)
+            check(x[i] == p[i / 3].x[i % 3] && y[i] == p[i / 3].y[i % 3],
+                  "both policies preserve the real-frame endpoint");
+    }
+    /* The fit API propagates the policy; keep_partial alone must not set it. */
+    FgPrimList empty = {0}; cp.keep_partial = 1;
+    fg_cam_fit(&empty, &empty, &cp, &fit, verts);
+    check(!fit.freeze_small_views, "partial fit does not implicitly freeze insets");
+    cp.freeze_small_views = 1;
+    fg_cam_fit(&empty, &empty, &cp, &fit, verts);
+    check(fit.freeze_small_views, "fit propagates explicit reprojection policy");
+}
+
 int main(void) {
+    test_small_view_policy();
     test_view_affine();
     test_hud_lerp();
     test_slots_5994();

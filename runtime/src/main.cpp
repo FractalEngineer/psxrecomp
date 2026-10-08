@@ -1337,7 +1337,6 @@ struct DynresHost {
     /* Smooth motion's generated frames (dynres_tick_rt). */
     uint64_t last_gen = 0, last_gen_meas = 0, last_gen_cost_ns = 0;
     double gen_mean_s = 0.0, gen_pending_s = 0.0;
-    double rt_acc_real_s = 0.0, rt_acc_gen_s = 0.0, rt_win_gen_frac = 0.0;
     unsigned long long rt_last_windows = 0;
     bool rt_trace_header = false;
     double rt_win_cpu_ms = 0.0, rt_win_gpu_ms = 0.0;   /* last window's means */
@@ -9683,13 +9682,9 @@ static void dynres_tick_rt(double now_s, double wall, double period, int held,
     double gen_s = 0.0;
     if (frames > 0 && !held) { gen_s = g_dynres.gen_pending_s; g_dynres.gen_pending_s = 0.0; }
     if (held) g_dynres.gen_pending_s = 0.0;
-    DynrtSample smp{ period, wall, frames, cost + gen_s, bp, held };
+    DynrtSample smp{ period, wall, frames, cost + gen_s, bp, held, gen_s };
     const int prev_level = c.level;
     const int level = dynrt_sample(&c, now_s, &smp);
-    if (frames > 0 && !held) {
-        g_dynres.rt_acc_real_s += cost;
-        g_dynres.rt_acc_gen_s += gen_s;
-    }
     /* Frame generation only spends surplus: not while the real frames are
      * over budget on their own (renewed every over-budget sample; the
      * in-between frames' part of the last window's load does not count, or
@@ -9698,13 +9693,10 @@ static void dynres_tick_rt(double now_s, double wall, double period, int held,
     if (level < prev_level)
         gl_renderer_frame_gen_hold(GL_FG_HOLD_STEP_DOWN, 0.25);
     else if (c.over_streak > 0 &&
-             c.last_load * (1.0 - g_dynres.rt_win_gen_frac) >= 1.0 - c.p.margin)
+             c.last_real_load >= 1.0 - c.p.margin)
         gl_renderer_frame_gen_hold(GL_FG_HOLD_OVER_BUDGET, 0.1);
     if (c.windows != g_dynres.rt_last_windows) {
         g_dynres.rt_last_windows = c.windows;
-        const double all = g_dynres.rt_acc_real_s + g_dynres.rt_acc_gen_s;
-        g_dynres.rt_win_gen_frac = all > 0.0 ? g_dynres.rt_acc_gen_s / all : 0.0;
-        g_dynres.rt_acc_real_s = g_dynres.rt_acc_gen_s = 0.0;
         g_dynres.rt_win_cpu_ms = g_dynres.rt_acc_frames
             ? g_dynres.rt_acc_cpu / (double)g_dynres.rt_acc_frames : 0.0;
         g_dynres.rt_win_gpu_ms = g_dynres.rt_acc_gpu_frames

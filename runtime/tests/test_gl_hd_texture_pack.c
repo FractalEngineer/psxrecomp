@@ -272,6 +272,35 @@ static void adv_hd_cases(const char* root) {
     gr_vram_upload_set_open(0);
     gl_renderer_render_thread_frame_boundary();
     check(!rt_held(),"ADV2: a state restored outside A0 releases the context");
+    /* Reverse authority transition: disable HD mid-A0, committing the actual
+     * public payload words so a canned buffer cannot hide lost readbacks. */
+    state(); gr_fill_rect(288,112,4,1,0x2345);
+    gr_vram_upload_begin(288,112,4,1);
+    adv_payload_word(288,112,done[0]);
+    check(gpu_hd_textures_configure(root,0,0,error,sizeof(error)),"disable HD mid-A0");
+    gl_renderer_render_thread_frame_boundary();
+    adv_payload_word(289,112,done[1]);
+    gl_renderer_render_thread_sync("hd-off-sync");
+    gr_vram_transfer_out(291,112,1,1,&back);
+    check(vram[112*1024+288]==done[0] && vram[112*1024+289]==done[1] && back==0x2345,
+          "HD-off transition preserves partial payload and untouched native words");
+    adv_payload_word(290,112,done[2]); adv_payload_word(291,112,done[3]);
+    uint16_t streamed[4]; memcpy(streamed,&vram[112*1024+288],sizeof(streamed));
+    gr_vram_upload_commit(288,112,4,1,streamed);
+    gl_renderer_render_thread_frame_boundary();
+    gr_vram_transfer_out(288,112,4,1,streamed);
+    check(!memcmp(streamed,done,sizeof(done)),"commit retains streamed words after HD-off");
+    /* GP1 reset aborts a deferred HD activation without leaving RT parked. */
+    gl_renderer_render_thread_frame_boundary();
+    state(); gr_fill_rect(288,116,4,1,0x3456);
+    gr_vram_upload_begin(288,116,4,1);
+    adv_payload_word(288,116,done[0]);
+    check(gpu_hd_textures_configure(root,1,0,error,sizeof(error)),"activate HD during another A0");
+    check(s_hd_authority_pending && !s_hd_native_authority,"activation deferred before abort");
+    gr_vram_upload_set_open(0);
+    gl_renderer_render_thread_frame_boundary();
+    check(s_hd_native_authority && !s_hd_authority_pending && !rt_held(),
+          "aborted A0 completes deferred authority switch and releases hold");
     gl_renderer_render_thread_stop();
     check(!memcmp(&vram[104*1024+256],done,sizeof(done)),"ADV2: stop keeps the committed upload");
 }
@@ -662,6 +691,14 @@ int main(int argc,char** argv) {
         gl_renderer_restage_vram_after_savestate();
         check(gpu_hd_textures_acquire_draw(texture_page,0,0,bounds,0,0,&img),"restage re-admits an unchanged learned upload");
         gpu_hd_textures_release_image(&img);
+        check(gpu_hd_textures_reload(error,sizeof(error)),"same-pack reload before rewind");
+        wait_ready(0);
+        gl_renderer_restage_vram_after_savestate();
+        check(gpu_hd_textures_acquire_draw(texture_page,0,0,bounds,0,0,&img),"same-pack reload retains learned upload for restage");
+        gpu_hd_textures_release_image(&img);
+        state(); gr_fill_rect(0,0,16,16,0x001f);
+        gr_draw_textured_rect(4,4,4,4,0,0,0,0,texture_page); capture();
+        check(sample(16,16)[0]>200 && sample(16,16)[1]<20,"reload then restage still draws HD replacement pixels");
         vram[512]^=1u; gl_renderer_restage_vram_after_savestate();
         check(!gpu_hd_textures_acquire_draw(texture_page,0,0,bounds,0,0,&img),"restage refuses a learned rectangle whose words changed");
         gpu_hd_textures_release_image(&img);

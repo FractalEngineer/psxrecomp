@@ -13,6 +13,19 @@ static void aa_capture_hook(int gen);
 #define main scale_fixture_main
 #include "test_gl_scale_invariance.c"
 #undef main
+/* RT replay links these residency callbacks even with no HD session. */
+void gpu_hd_textures_begin_upload(int x,int y,int w,int h){(void)x;(void)y;(void)w;(void)h;}
+void gpu_hd_textures_track_upload(int x,int y,int w,int h,const uint16_t* p){(void)x;(void)y;(void)w;(void)h;(void)p;}
+void gpu_hd_textures_invalidate(int x,int y,int w,int h){(void)x;(void)y;(void)w;(void)h;}
+void gpu_hd_textures_begin_copy(int sx,int sy,int x,int y,int w,int h){(void)sx;(void)sy;(void)x;(void)y;(void)w;(void)h;}
+void gpu_hd_textures_end_copy(void){}
+#ifndef PSX_NO_DEBUG_TOOLS
+/* This fixture tests AA timing, not the debug image ring. */
+int present_image_ring_accepting(void){return 0;}
+int present_image_ring_thumb_w(int w,int h){(void)w;(void)h;return 0;}
+void present_image_ring_push(uint32_t f,const uint8_t* p,int w,int pitch,int flip){(void)f;(void)p;(void)w;(void)pitch;(void)flip;}
+void present_image_ring_push_argb(uint32_t f,const uint32_t* p,int w,int h,int pitch){(void)f;(void)p;(void)w;(void)h;(void)pitch;}
+#endif
 void present_shot_done(int ok) { (void)ok; }
 int host_osd_needs_present(void) { return 0; }
 int psx_present_vsync_owns_cadence(void) { return 0; }
@@ -55,7 +68,12 @@ static uint8_t *frame(int mode, uint64_t *vram_hash) {
     check(gl_renderer_fbo_peek(0, 0, FRAME_W, FRAME_H, peek), "vram readback");
     *vram_hash = fnv(peek, FRAME_W * FRAME_H * 2, 0xcbf29ce484222325ull);
     const int n0 = s_cap_n;
+    if (s_rth_on) gl_renderer_render_thread_frame_boundary();
     gl_renderer_present_vram(0, 0, FRAME_W, FRAME_H, 0, 0);
+    if (s_rth_on) {
+        gl_renderer_render_thread_frame_boundary();
+        gl_renderer_render_thread_sync("aa-capture");
+    }
     check(s_cap_n == n0 + 1 && s_cap, "present captured");
     uint8_t *c = (uint8_t *)malloc((size_t)s_cap_w * s_cap_h * 3);
     memcpy(c, s_cap, (size_t)s_cap_w * s_cap_h * 3);
@@ -122,6 +140,39 @@ int main(int argc, char **argv) {
     check(memcmp(off, off2, bytes) == 0, "off after AA is byte-identical");
     check(h_off == h_fx && h_off == h_hq && h_off == h_off2, "guest VRAM identical in every mode");
     free(fx); free(hq); free(off2);
+    /* The same live transitions with actual RT-owned presents. The setter
+     * must hand ownership to the caller before changing the mode. */
+    check(gl_renderer_render_thread_start(2) == 1, "AA render thread started");
+    gl_renderer_render_thread_frame_boundary();
+    check(!rt_held(), "AA render thread initially owns the context");
+    gl_renderer_set_post_aa(GL_POST_AA_OFF);
+    check(rt_held(), "live AA setter acquires context ownership");
+#ifndef PSX_NO_DEBUG_TOOLS
+    s_paa_time = 1;
+#endif
+    uint64_t h_rt = 0;
+    uint8_t *rt_off = frame(GL_POST_AA_OFF, &h_rt);
+    check(h_rt == h_off && memcmp(off, rt_off, bytes) == 0, "RT AA off preserves pixels and native VRAM");
+    free(rt_off);
+    uint8_t *rt_fx = frame(GL_POST_AA_FXAA, &h_rt);
+    check(h_rt == h_off && mid_tones(rt_fx) > m_off + 40, "RT FXAA softens edges without changing VRAM");
+    free(rt_fx);
+    uint8_t *rt_hq = frame(GL_POST_AA_FXAA_HQ, &h_rt);
+    check(h_rt == h_off && mid_tones(rt_hq) > m_off + 40, "RT HQ softens edges without changing VRAM");
+    free(rt_hq);
+    uint8_t *rt_off2 = frame(GL_POST_AA_OFF, &h_rt);
+    check(h_rt == h_off && memcmp(off, rt_off2, bytes) == 0, "RT AA round trip restores exact off image");
+    free(rt_off2);
+    gl_renderer_render_thread_frame_boundary();
+    check(gl_renderer_post_aa() == GL_POST_AA_OFF && rt_held(), "AA mode getter uses ownership handoff");
+    gl_renderer_render_thread_frame_boundary();
+    check(gl_renderer_post_aa_passes() == 4 && rt_held(), "AA pass getter drains in-flight work safely");
+#ifndef PSX_NO_DEBUG_TOOLS
+    gl_renderer_render_thread_frame_boundary();
+    check(gl_renderer_post_aa_gpu_us() > 0.0 && rt_held(), "AA timing getter safely reads and resets RT measurements");
+    check(gl_renderer_post_aa_gpu_us() == 0.0, "AA timing mean resets after read");
+#endif
+    gl_renderer_render_thread_stop();
 #endif
     free(off);
     check(glGetError() == GL_NO_ERROR, "GL errors");

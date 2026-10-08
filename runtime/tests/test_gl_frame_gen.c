@@ -302,6 +302,44 @@ static void present(int bx) {
     gl_renderer_render_thread_frame_boundary();
 }
 
+static _Atomic int stats_writer_done;
+static int stats_writer(void *unused) {
+    (void)unused;
+    for (unsigned i = 0; i < 50000; i++) {
+        s_fg_generated++;
+        fg_gen_cost_publish(1000);
+    }
+    atomic_store(&stats_writer_done, 1);
+    return 0;
+}
+
+static void test_cost_publication(void) {
+    SDL_Thread *writer = SDL_CreateThread(stats_writer, "fg-stats-test", NULL);
+    check(writer != NULL, "generation stats writer started");
+    if (!writer) return;
+    int coherent = 1, monotonic = 1;
+    uint64_t last = 0;
+    do {
+        uint64_t gen, count, cost;
+        gl_renderer_frame_gen_costs(&gen, &count, &cost);
+        coherent &= cost == count * 1000 && gen >= count;
+        monotonic &= count >= last;
+        last = count;
+    } while (!atomic_load(&stats_writer_done));
+    SDL_WaitThread(writer, NULL);
+    uint64_t gen, real, count, cost;
+    gl_renderer_frame_gen_counts(&gen, &real);
+    gl_renderer_frame_gen_costs(NULL, &count, &cost);
+    check(coherent && monotonic, "concurrent generation stats retain a coherent monotonic cost/count pair");
+    check(gen == 50000 && count == gen && cost == gen * 1000 && real == 0,
+          "generation stats final totals exact");
+    /* Only fixture initialization resets totals, before the GL RT exists. */
+    atomic_store(&s_fg_generated, 0);
+    atomic_store(&s_fg_gen_measured, 0);
+    atomic_store(&s_fg_gen_cost_ns, 0);
+    atomic_store(&s_fg_gen_cost_seq, 0);
+}
+
 int main(int argc, char **argv) {
     int scale = argc > 1 ? atoi(argv[1]) : 2;
     int fg = argc > 2 && argv[2][0] == '1';
@@ -323,6 +361,7 @@ int main(int argc, char **argv) {
         return 77;
     }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    test_cost_publication();
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 #if defined(__APPLE__)

@@ -393,6 +393,7 @@ double dynrt_up_blocked_s(const DynrtController *c, int level, double now_s) {
 
 static void rt_window_reset(DynrtController *c) {
     c->win_period = c->win_wall = c->win_cost = c->win_bp = 0.0;
+    c->win_generated_cost = 0.0;
     c->win_n = c->win_frames = 0;
 }
 
@@ -471,6 +472,7 @@ static int rt_close_window(DynrtController *c, double now) {
     const double dur = c->win_period;
     const int n = c->win_n, frames = c->win_frames;
     const double wall = c->win_wall, cost = c->win_cost, bp = c->win_bp;
+    const double real_cost = cost - c->win_generated_cost;
     rt_window_reset(c);
     c->windows++;
     if (frames < 1 || (double)frames < c->p.min_coverage * (double)n) {
@@ -488,6 +490,10 @@ static int rt_close_window(DynrtController *c, double now) {
     const double interval = wall / (double)n;
     const double budget = 1.0 - c->p.margin;
     c->last_load = load;
+    /* Judge the real work using THIS window's mix, before the caller decides
+     * whether to hold generation. Holds/gaps/thin windows discard the mix
+     * with the rest of the controller window, not in a separate accumulator. */
+    c->last_real_load = (real_cost / (double)frames) / period;
     c->last_bp_share = bp_share;
     c->last_hz = wall > 0.0 ? (double)n / wall : 0.0;
     c->last_valid = 1;
@@ -628,6 +634,10 @@ int dynrt_sample(DynrtController *c, double now_s, const DynrtSample *s) {
     if (s->frames > 0 && s->cost_s >= 0.0) {
         c->win_frames += s->frames;
         c->win_cost += s->cost_s;
+        double gen = s->generated_cost_s;
+        if (gen < 0.0) gen = 0.0;
+        if (gen > s->cost_s) gen = s->cost_s;
+        c->win_generated_cost += gen;
     }
     if (s->bp_s > 0.0) c->win_bp += s->bp_s;
     if (c->win_period >= c->p.window_s - 1e-9) return rt_close_window(c, now_s);
