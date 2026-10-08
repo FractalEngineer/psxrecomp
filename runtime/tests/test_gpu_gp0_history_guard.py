@@ -294,6 +294,7 @@ void gl_renderer_note_wide_triangle_recovery(int enabled)
 { if (enabled) abort(); }
 /* Smooth motion vertex sources are an OpenGL path: never reached here. */
 int gl_renderer_frame_generation(void) { return 0; }
+int gl_renderer_pgxp_render_wanted(void) { return 0; }
 void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int32_t h[3],
     const int32_t x[3], const int32_t y[3])
 { (void)id; (void)pc; (void)h; (void)x; (void)y; abort(); }

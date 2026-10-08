@@ -1270,6 +1270,18 @@ differ by 801 / 92 / 25 / 0 px, none in the tachometer area.
 Diagnostic: `PSX_PGXP_TRI_LOG=<file>` logs every triangle (depth mode, x y
 SZ) while `<file>.on` exists.
 
+**Off costs nothing; Smooth motion matches.** gpu.c sends
+`gr_set_depth_triangle` only while a PGXP renderer feature is on
+(`gl_renderer_pgxp_render_wanted`), so with them off the render thread
+records no extra `RTH_DEPTH` per triangle. The SZ rides in the textured
+vertex's unused colour alpha (negative when present), so the vertex stays 26
+floats for every title. The setters sync with a live render thread
+(`GL_RT_SYNC`) like their neighbours. A depth-mode change ends a textured
+batch as its own reason (`batch_diag` entry 8). Smooth-motion in-between
+frames replay `RTH_DEPTH` and test depth like the real frame, from their
+own clear: `gl_frame_gen_test` draws overlapping PGXP triangles out of painter
+order and requires the in-between frame at phase 1 to equal the real one.
+
 ## IR1 — Internal resolution presets (Native … 8K) and the GL scale ceiling (2026-09-26)
 
 **What the player gets.** Settings → Display → **Internal resolution**: Native,

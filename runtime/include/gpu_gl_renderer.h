@@ -267,6 +267,9 @@ float gl_renderer_get_post_gamma(void);
 void gl_renderer_set_wide_fast(int on);
 /* PGXP renderer features (docs/ENHANCEMENTS.md G1.14), all off by default:
  * depth buffer for opaque 3D polygons and the depth clear threshold in SZ units (DuckStation's default 4096). */
+/* Nonzero when a PGXP renderer feature is on: only then does gpu.c send
+ * gr_set_depth_triangle (no extra command per triangle otherwise). Any thread. */
+int  gl_renderer_pgxp_render_wanted(void);
 void gl_renderer_set_pgxp_depth(int on);
 int  gl_renderer_get_pgxp_depth(void);
 void gl_renderer_set_pgxp_depth_threshold(float sz);
@@ -489,7 +492,7 @@ void gl_renderer_draw_projected_triangle(const PSXProjectedVertex vertices[3],
     int perspective);
 /* Cumulative textured-batch diagnostics: total, then flushes caused by
  * isolation, blend-mode, mask, filter, backdrop-gate, texture-window, capacity. */
-void gl_renderer_batch_diag(uint64_t out[8]);
+void gl_renderer_batch_diag(uint64_t out[9]);
 
 /* Texture-window batching ([video] texture_window_batching; default off).
  * On: textured prims with different GP0(E2h) texture windows share a batch

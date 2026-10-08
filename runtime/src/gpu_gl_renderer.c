@@ -715,7 +715,7 @@ static GLuint s_tex_prog = 0, s_tex_vao = 0, s_tex_vbo = 0;
  * fragment shader read the noperspective varying — i.e. bit-identical to the
  * pre-feature pipeline. twin is the prim's GP0(E2h) texture window, its low 20
  * bits as a whole float (mask x, mask y, offset x, offset y; 5 bits each). */
-#define TEXV 27   /* + a_pz at 26 (PGXP depth, G1.14) */
+#define TEXV 26
 static GLuint s_blit_prog = 0, s_blit_vao = 0, s_blit_vbo = 0;
 static GLuint s_blit_hi_prog = 0;            /* windowed hi surface blit */
 static GLint  s_uBhSrc = -1, s_uBhPass = -1, s_uBhMaskset = -1, s_uBhSrcDiv = -1;
@@ -1596,7 +1596,6 @@ static const char *TEX_VS =
     "layout(location=10) in float a_twin; /* GP0(E2h) bits 0..19 */\n"
     "layout(location=11) in vec4 a_hd_source; /* page origin + native extent */\n"
     "layout(location=12) in float a_hd_mode;\n"
-    "layout(location=13) in float a_pz;  /* PGXP: sz; 0 = none */\n"
     "uniform float u_shift;\n"
     "uniform float u_xoff;   /* native-wide x translation (px); 0 canonical */\n"
     "uniform float u_xhalf;  /* x clip half-extent (px); 512 canonical */\n"
@@ -1631,7 +1630,9 @@ static const char *TEX_VS =
     "   * the rasterizer interpolates the smooth varying hyperbolically. With\n"
     "   * a_q == 0 (feature off) w is exactly 1.0 and this is the old expression. */\n"
     "  float w = (a_q > 0.0) ? (1.0 / a_q) : 1.0;\n"
-    "  float sz = a_pz, zn = 0.0;\n"
+    "  /* PGXP (G1.14): a_col.a is 1.0 (unused) unless a PGXP 3D vertex\n"
+    "   * stores -sz there, so the vertex stays TEXV floats for every title. */\n"
+    "  float sz = a_col.a < 0.0 ? -a_col.a : 0.0, zn = 0.0;\n"
     "  if (sz > 0.5) { zn = 1.0 - 512.0 / (max(sz * (1.0 - u_zbias) - (u_zbias > 0.0 ? 48.0 : 0.0), 1.0) + 256.0); }\n"
     "  vec2 ndc = vec2((xb+u_shift+u_xoff)/u_xhalf - 1.0, (a_pos.y+u_shift)/256.0 - 1.0);\n"
     "  gl_Position = vec4(ndc * w, zn * w, w); }\n";
@@ -2921,15 +2922,29 @@ void gl_renderer_set_wide_fast(int on) {
     GL_RT_SYNC("set_wide_fast"); s_wide_fast = on ? 1 : 0; }
 int  gl_renderer_get_wide_fast(void) { return s_wide_fast; }
 
-/* PGXP renderer features (G1.14). Plain flags read at append time, so they
- * can flip between any two primitives. */
+/* PGXP renderer features (G1.14). Flags read at append time, so they can
+ * flip between any two primitives. Like their neighbours the setters sync
+ * with a live render thread first (GL_RT_SYNC), so a change never lands in
+ * the middle of a replayed frame; they are safe at session_reboot. */
+static int s_pgxp_render_wanted = 0;   /* any PGXP renderer feature on */
+static void pgxp_render_wanted_update(void) {
+    __atomic_store_n(&s_pgxp_render_wanted, s_pgxp_depth ? 1 : 0, __ATOMIC_RELEASE);
+}
+int gl_renderer_pgxp_render_wanted(void) {
+    return __atomic_load_n(&s_pgxp_render_wanted, __ATOMIC_ACQUIRE);
+}
 void gl_renderer_set_pgxp_depth(int on) {
+    GL_RT_SYNC("set_pgxp_depth");
     s_pgxp_depth = on ? 1 : 0;
     s_depth_need_clear = 1;
+    s_pz_valid = 0;
+    pgxp_render_wanted_update();
 }
 int  gl_renderer_get_pgxp_depth(void) { return s_pgxp_depth; }
-void gl_renderer_set_pgxp_depth_threshold(float sz) { s_pgxp_depth_threshold = sz; }
+void gl_renderer_set_pgxp_depth_threshold(float sz) {
+    GL_RT_SYNC("set_pgxp_depth_threshold"); s_pgxp_depth_threshold = sz; }
 void gl_renderer_pgxp_render_stats(uint64_t *depth_tris, uint64_t *depth_clears) {
+    GL_RT_SYNC("pgxp_render_stats");
     if (depth_tris) *depth_tris = s_depth_tris;
     if (depth_clears) *depth_clears = s_depth_clears;
 }
@@ -3128,10 +3143,10 @@ void gl_renderer_set_texture_window_batching(int on) {
     GL_RT_SYNC("set_texture_window_batching"); s_twin_batching = on ? 1 : 0; }
 int  gl_renderer_get_texture_window_batching(void) { return s_twin_batching; }
 
-void gl_renderer_batch_diag(uint64_t out[8]) {
+void gl_renderer_batch_diag(uint64_t out[9]) {
     GL_RT_SYNC("batch_diag");
     out[0] = s_batch_total;
-    for (int i = 0; i < 7; i++) out[i + 1] = s_batch_reason[i];
+    for (int i = 0; i < 8; i++) out[i + 1] = s_batch_reason[i];
 }
 
 /* Draw the queued textured batch with correct PSX mask-bit handling AND correct
@@ -4169,7 +4184,7 @@ static void gpu_textured_triangle(const int *xs, const int *ys,
             else if ((!s_twin_batching || s_mask_check) &&
                      (twx != s_tb_twin[0] || twy != s_tb_twin[1] ||
                       tox != s_tb_twin[2] || toy != s_tb_twin[3])) reason = 5;
-            else if (tdmode != s_tb_depth) reason = 6;
+            else if (tdmode != s_tb_depth) reason = 7;
         }
         if (reason >= 0) {
             s_batch_reason[reason]++;
@@ -4204,12 +4219,14 @@ static void gpu_textured_triangle(const int *xs, const int *ys,
             vp[21] = (float)hd.origin_u; vp[22] = (float)hd.origin_v;
             vp[23] = (float)hd.source_width; vp[24] = (float)hd.source_height;
             vp[25] = (float)hd.alpha_mode;
-            vp[26] = 0.0f;                                          /* a_pz     */
         }
         if (pgxp_tri_is_3d()) {
             float *t0 = &s_tb[s_tb_n * TEXV];
             float z[3] = { s_pz[0], s_pz[1], s_pz[2] };
-            for (int i = 0; i < 3; i++) t0[i * TEXV + 26] = pgxp_vertex_code(z[i]);
+            for (int i = 0; i < 3; i++) {
+                const float code = pgxp_vertex_code(z[i]);
+                if (code > 0.0f) t0[i * TEXV + 7] = -code;   /* a_col.a (TEX_VS) */
+            }
         }
         pgxp_tri_log_tri('T', tdmode, semi, &s_tb[s_tb_n * TEXV], TEXV);
         s_tb_n += 3;
@@ -5407,7 +5424,6 @@ static int init_gpu_raster(void) {
         p_glVertexAttribPointer(10, 1, GL_FLOAT, GL_FALSE, st, (void*)(20*sizeof(float))); p_glEnableVertexAttribArray(10); /* twin */
         p_glVertexAttribPointer(11, 4, GL_FLOAT, GL_FALSE, st, (void*)(21*sizeof(float))); p_glEnableVertexAttribArray(11); /* HD source */
         p_glVertexAttribPointer(12, 1, GL_FLOAT, GL_FALSE, st, (void*)(25*sizeof(float))); p_glEnableVertexAttribArray(12); /* HD alpha mode */
-        p_glVertexAttribPointer(13, 1, GL_FLOAT, GL_FALSE, st, (void*)(26*sizeof(float))); p_glEnableVertexAttribArray(13); /* pz   */
     }
 
     p_glGenVertexArrays(1, &s_blit_vao);
@@ -10897,7 +10913,9 @@ static void fg_draw_tri_at(uint16_t op, const int32_t *v, const void *payload,
                                             a[3], a[4], a[5]);
         return;
     }
-    if (!integral) {
+    /* A PGXP depth triangle (s_pz_valid) is 3D only with sub-pixel
+     * positions, as in the real frame: keep them even when integral. */
+    if (!integral || s_pz_valid) {
         glb_set_precise_triangle(1, (int32_t)lrintf(x[0] * 65536.0f), (int32_t)lrintf(y[0] * 65536.0f),
                                  (int32_t)lrintf(x[1] * 65536.0f), (int32_t)lrintf(y[1] * 65536.0f),
                                  (int32_t)lrintf(x[2] * 65536.0f), (int32_t)lrintf(y[2] * 65536.0f));
@@ -10980,7 +10998,12 @@ static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wid
             glb_set_perspective_triangle(v[0], q[0], q[1], q[2]);
             break;
         }
-        case RTH_DEPTH: break;   /* generated frames draw without PGXP depth */
+        case RTH_DEPTH: {   /* PGXP depth (G1.14): as the real frame */
+            float z[3];
+            memcpy(z, &v[1], sizeof z);
+            glb_set_depth_triangle(v[0], z[0], z[1], z[2]);
+            break;
+        }
         case RTH_AREA:    glb_set_draw_area(v[0], v[1], v[2], v[3]); break;
         case RTH_OFFSET:  glb_set_draw_offset(v[0], v[1]); break;
         case RTH_STATE:   s_rths_flat_bd = v[0]; s_rths_vp_w = v[1]; s_rths_bg_full = v[2]; break;
@@ -11034,6 +11057,7 @@ static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wid
             const int pi = b->rec2prim ? b->rec2prim[r] : -1;
             if (pi < 0) {   /* outside the display: drawn into VRAM already */
                 pc_pending = 0;
+                precise_consumed();
                 break;
             }
             const FgPrim *pb = &b->prims.v[pi];
@@ -11046,6 +11070,7 @@ static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wid
                 }
                 if (gone) {   /* crossed the camera plane: not in this frame */
                     pc_pending = 0;
+                    precise_consumed();
                     break;
                 }
             } else {
@@ -11127,7 +11152,14 @@ static int fg_generate(double t, int swap) {
     fg_state_capture(&real);
     const GLuint real_wide_cur = g_wide_cur;
     const int real_pc = s_pc_valid, real_pq = s_pq_valid, real_pz = s_pz_valid;
-    s_pz_valid = 0;   /* generated frames draw without PGXP depth */
+    /* PGXP depth (G1.14): the generated frame tests depth like the real one,
+     * from its own clear (the surface's depth is not the real frame's), and
+     * leaves the real stream's depth bookkeeping and counters untouched. */
+    const int real_dneed = s_depth_need_clear, real_dused = s_depth_used;
+    const float real_davg = s_depth_last_avg;
+    const uint64_t real_dtris = s_depth_tris, real_dclears = s_depth_clears;
+    s_pz_valid = 0;
+    s_depth_need_clear = 1;
     DirtyRect pack = s_pack_dirty, sten = s_stencil_stale, cpu = s_cpu_dirty;
     const int sten_valid = s_stencil_valid, gpu_dirty = s_gpu_dirty;
     uint64_t pres_dirty[PRES_ROWS];
@@ -11208,6 +11240,8 @@ static int fg_generate(double t, int swap) {
     }
     fg_state_apply(&real, real_wide_cur);
     s_pc_valid = real_pc; s_pq_valid = real_pq; s_pz_valid = real_pz;
+    s_depth_need_clear = real_dneed; s_depth_used = real_dused; s_depth_last_avg = real_davg;
+    s_depth_tris = real_dtris; s_depth_clears = real_dclears;
     s_pack_dirty = pack; s_stencil_stale = sten; s_cpu_dirty = cpu;
     s_stencil_valid = sten_valid; s_gpu_dirty = gpu_dirty;
     memcpy(s_present_dirty, pres_dirty, sizeof pres_dirty);

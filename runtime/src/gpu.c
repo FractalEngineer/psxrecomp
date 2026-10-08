@@ -4612,7 +4612,10 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
         gl_renderer_fg_source(id, pc, hd, vx, vy);
     }
     gr_set_perspective_triangle(0, 0.0f, 0.0f, 0.0f);
-    gr_set_depth_triangle(0, 0.0f, 0.0f, 0.0f);
+    /* PGXP depth (G1.14) only reaches the renderer while a PGXP renderer
+     * feature is on: with them off no depth command is sent per triangle. */
+    const int want_depth = gl_renderer_pgxp_render_wanted();
+    if (want_depth) gr_set_depth_triangle(0, 0.0f, 0.0f, 0.0f);
     const int geometry = gte_geometry_correction_enabled();
     if (!geometry && !s_native_wide_projection_correction) {
         gr_set_precise_triangle(0, 0,0, 0,0, 0,0);
@@ -4670,7 +4673,7 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
         return;
     }
     gr_set_precise_triangle(1, fx[0],fy[0], fx[1],fy[1], fx[2],fy[2]);
-    if (vz[0] && vz[1] && vz[2])
+    if (want_depth && vz[0] && vz[1] && vz[2])
         gr_set_depth_triangle(1, (float)vz[0], (float)vz[1], (float)vz[2]);
 }
 
