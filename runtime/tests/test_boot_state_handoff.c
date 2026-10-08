@@ -9,6 +9,10 @@ static uint16_t vram[1024*512];
 static int boot_clears, cd_handoffs;
 uint32_t i_stat, i_mask, g_psx_icache_tv[1024];
 uint64_t psx_cycle_count;
+uint32_t g_psx_gcs_frac;
+uint32_t psx_guest_cycle_scale_config(void) { return 1; }
+void psx_guest_cycle_scale_snapshot(uint32_t out[3]) { memset(out,0,12); }
+void psx_guest_cycle_scale_restore(const uint32_t in[3]) { (void)in; }
 uint8_t* memory_get_ram_ptr(void) { return ram; }
 uint32_t memory_get_ram_bytes(void) { return sizeof ram; }
 uint8_t* memory_get_scratchpad_ptr(void) { return spad; }

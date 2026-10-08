@@ -158,6 +158,11 @@ if(BUILD_TESTING)
     set(PSX_GL_READBACK_COMPILER_BIN "${_gl_test_default_bin}" CACHE PATH "GCC/MinGW bin for GL fixture")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME guest_implementation_binding_test COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_guest_implementation.py"
+            --cmake "${CMAKE_COMMAND}" --compiler "${CMAKE_C_COMPILER}"
+            --generator "${CMAKE_GENERATOR}"
+            --work-root "${CMAKE_CURRENT_BINARY_DIR}/hle-binding-fixtures")
         add_test(NAME host_launch_timings_protocol_test COMMAND ${CMAKE_COMMAND} -E env
             "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}" "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_host_launch_timings_protocol.py")

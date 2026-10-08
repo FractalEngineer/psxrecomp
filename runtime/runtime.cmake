@@ -22,6 +22,7 @@ include("${PSXRECOMP_ROOT}/runtime/openxr_dependency.cmake")
 include("${PSXRECOMP_ROOT}/runtime/overlay_static_sources.cmake")
 include("${PSXRECOMP_ROOT}/runtime/netplay_dependency.cmake")
 include("${PSXRECOMP_ROOT}/runtime/texture_image_dependency.cmake")
+include("${PSXRECOMP_ROOT}/runtime/guest_implementation.cmake")
 
 # Default to an optimized build. The recompiled game is a huge (~270 MB) block of
 # generated C; with no CMAKE_BUILD_TYPE the compiler emits it at -O0 and the game
