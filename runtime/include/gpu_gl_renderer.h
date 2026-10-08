@@ -176,6 +176,15 @@ void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linea
  * Returns 0 only if a texture could not be created. */
 int  gl_renderer_set_bezel(const void *rgba, int w, int h);
 int  gl_renderer_has_bezel(void);
+/* Post-process anti-aliasing of the composed game image ([video]
+ * antialiasing_mode, PSX_AA_MODE). Off by default; OSD and bezel are not
+ * filtered and guest VRAM is never touched. Takes effect at the next present;
+ * safe to call from any thread. */
+enum { GL_POST_AA_OFF = 0, GL_POST_AA_FXAA = 1, GL_POST_AA_FXAA_HQ = 2 };
+int  gl_renderer_set_post_aa(int mode);
+int  gl_renderer_post_aa(void);
+uint64_t gl_renderer_post_aa_passes(void);
+double gl_renderer_post_aa_gpu_us(void);   /* debug builds, PSX_POST_AA_TIME=N: mean pass time (us), resets */
 
 /* Clear to black + swap (display-disabled frame). */
 void gl_renderer_present_blank(void);

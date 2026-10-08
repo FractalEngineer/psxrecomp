@@ -601,6 +601,7 @@ static int           s_osd_tw = 0, s_osd_th = 0;
 static GLuint        s_present_prog = 0, s_present_vao = 0;
 static GLuint        s_xr_color_prog = 0, s_xr_native_tex = 0;
 static void          gl_swap_with_osd(void);
+static int           s_post_aa = 0;   /* GL_POST_AA_*; post-process AA (post_aa_apply) */
 static int s_native_surface_enabled, s_native_surface_pending;
 static int s_native_surface_rect[4]; /* Fresh native backbuffer content, GL coordinates. */
 static double s_native_surface_distance, s_native_surface_width, s_native_surface_units;
@@ -1338,8 +1339,12 @@ int gl_renderer_coh_get(uint64_t seq, GlCohEvent *out) {
 static GlPresEvent s_pres_ring[GL_PRES_RING_CAP];
 static uint64_t    s_pres_seq = 0;
 
+static void post_aa_apply(int lx, int ly, int lw, int lh);
 static void pres_record(int path, int dx, int dy, int w, int h,
                         int lx, int ly, int lw, int lh) {
+    /* The composed game image, before hold-last capture and the OSD. */
+    if (s_post_aa && (path == GL_PRES_VRAM || path == GL_PRES_WIDE || path == GL_PRES_INTERP))
+        post_aa_apply(lx, ly, lw, lh);
     s_native_surface_pending=s_native_surface_enabled &&
         (path==GL_PRES_VRAM || path==GL_PRES_WIDE || path==GL_PRES_CPU || path==GL_PRES_BLANK);
     s_native_surface_rect[0]=lx;s_native_surface_rect[1]=ly;
@@ -1407,6 +1412,185 @@ static const char *PRESENT_VS =
     "  v_uv = vec2(mix(u_uv_rect.x,u_uv_rect.z,p.x),\n"
     "              mix(u_uv_rect.y,u_uv_rect.w,1.0-p.y));\n"
     "  gl_Position = vec4(p*2.0-1.0,0.0,1.0); }\n";
+/* ---- Post-process anti-aliasing ([video] antialiasing_mode) ----------------
+ * Opt-in, off by default: with the mode off nothing below runs and the present
+ * is byte-identical to a build without it. When on, the composed game image
+ * (the letterbox rect pres_record is told about, after the game quad and
+ * before hold-last capture, OSD, screenshots and the swap) is copied out of
+ * the drawable and redrawn through an edge filter. It works on the output
+ * pixels only: guest VRAM, the hr/wide surfaces, readbacks, render passes and
+ * the Smooth motion / frame generation sources are never touched, so it
+ * composes with every present path (4:3, native-wide, interpolated and
+ * generated frames) and with internal resolution / dynamic resolution, whose
+ * area resolve has already happened by then. OSD and bezel stay sharp.
+ *
+ * FXAA here is an independent implementation of the published technique
+ * (luma contrast test, edge orientation, bounded end-of-edge search,
+ * sub-pixel blend); it is one copy plus one full-screen pass. */
+static GLuint build_program(const char *vs, const char *fs);
+static GLuint s_paa_prog = 0, s_paa_tex = 0;
+static int    s_paa_tw = 0, s_paa_th = 0, s_paa_failed = 0;
+static GLint  s_paa_uTex = -1, s_paa_uRcp = -1, s_paa_uUvRect = -1, s_paa_uQuality = -1;
+static uint64_t s_paa_passes = 0;
+#ifndef PSX_NO_DEBUG_TOOLS
+/* Cost of the pass (debug server post_aa), only with PSX_POST_AA_TIME=N: the
+ * pass runs N times (1..64; N > 1 re-filters the frame and amortizes the
+ * fence) bracketed by glFinish and timed on the host clock. That serializes
+ * the GPU, so it is a measurement mode, never on by default. (Timestamp
+ * queries read 0 on Apple's GL.) */
+static int    s_paa_time = -1;
+static double s_paa_gpu_us_sum = 0.0;
+static uint64_t s_paa_gpu_n = 0, s_paa_t0 = 0;
+#endif
+
+static const char *POST_AA_FS =
+    "#version 330\n"
+    "in vec2 v_uv; out vec4 o;\n"
+    "uniform sampler2D u_tex; uniform vec2 u_rcp; uniform int u_quality;\n"
+    "float L(vec3 c){ return dot(c, vec3(0.299,0.587,0.114)); }\n"
+    "float LS(vec2 p){ return L(textureLod(u_tex,p,0.0).rgb); }\n"
+    "void main(){\n"
+    "  vec3 cM = textureLod(u_tex, v_uv, 0.0).rgb; float lM = L(cM);\n"
+    "  float lN = LS(v_uv+vec2(0.0, u_rcp.y)), lS = LS(v_uv-vec2(0.0, u_rcp.y));\n"
+    "  float lE = LS(v_uv+vec2(u_rcp.x,0.0)), lW = LS(v_uv-vec2(u_rcp.x,0.0));\n"
+    "  float mx = max(lM,max(max(lN,lS),max(lE,lW)));\n"
+    "  float mn = min(lM,min(min(lN,lS),min(lE,lW)));\n"
+    "  float range = mx - mn;\n"
+    /* thresholds: absolute 1/16 (1/24 at high quality), relative 1/8 */
+    "  float thr = u_quality > 0 ? 0.0417 : 0.0625;\n"
+    "  if (range < max(thr, mx*0.125)) { o = vec4(cM,1.0); return; }\n"
+    "  float lNE = LS(v_uv+u_rcp), lSW = LS(v_uv-u_rcp);\n"
+    "  float lNW = LS(v_uv+vec2(-u_rcp.x,u_rcp.y)), lSE = LS(v_uv+vec2(u_rcp.x,-u_rcp.y));\n"
+    "  float eH = abs(lNW+lNE-2.0*lN) + 2.0*abs(lW+lE-2.0*lM) + abs(lSW+lSE-2.0*lS);\n"
+    "  float eV = abs(lNW+lSW-2.0*lW) + 2.0*abs(lN+lS-2.0*lM) + abs(lNE+lSE-2.0*lE);\n"
+    "  bool horz = eH >= eV;\n"
+    "  float l1 = horz ? lS : lW, l2 = horz ? lN : lE;\n"
+    "  float g1 = abs(l1-lM), g2 = abs(l2-lM);\n"
+    "  bool neg = g1 >= g2;\n"
+    "  float grad = 0.25*max(g1,g2);\n"
+    "  float step = horz ? u_rcp.y : u_rcp.x;\n"
+    "  float lLocal; if (neg) { step = -step; lLocal = 0.5*(l1+lM); } else lLocal = 0.5*(l2+lM);\n"
+    "  vec2 p = v_uv; if (horz) p.y += 0.5*step; else p.x += 0.5*step;\n"
+    "  vec2 off = horz ? vec2(u_rcp.x,0.0) : vec2(0.0,u_rcp.y);\n"
+    "  vec2 p1 = p - off, p2 = p + off;\n"
+    "  float e1 = LS(p1)-lLocal, e2 = LS(p2)-lLocal;\n"
+    "  bool d1 = abs(e1) >= grad, d2 = abs(e2) >= grad;\n"
+    "  int steps = u_quality > 0 ? 12 : 8;\n"
+    "  for (int i = 1; i < steps && !(d1 && d2); i++) {\n"
+    "    float k = i < 2 ? 1.0 : (i < 5 ? 1.5 : (i < 8 ? 2.0 : 4.0));\n"
+    "    if (!d1) { p1 -= off*k; e1 = LS(p1)-lLocal; d1 = abs(e1) >= grad; }\n"
+    "    if (!d2) { p2 += off*k; e2 = LS(p2)-lLocal; d2 = abs(e2) >= grad; }\n"
+    "  }\n"
+    "  float dist1 = horz ? v_uv.x-p1.x : v_uv.y-p1.y;\n"
+    "  float dist2 = horz ? p2.x-v_uv.x : p2.y-v_uv.y;\n"
+    "  bool near1 = dist1 < dist2; float dmin = min(dist1,dist2);\n"
+    "  float len = dist1 + dist2;\n"
+    "  bool mLess = (lM - lLocal) < 0.0;\n"
+    "  bool good = ((near1 ? e1 : e2) < 0.0) != mLess;\n"
+    "  float eo = good ? (0.5 - dmin/len) : 0.0;\n"
+    "  float avg = (2.0*(lN+lS+lE+lW) + lNE+lNW+lSE+lSW) / 12.0;\n"
+    "  float sp = clamp(abs(avg-lM)/range, 0.0, 1.0);\n"
+    "  sp = (-2.0*sp + 3.0)*sp*sp; sp = sp*sp*0.75;\n"
+    "  float f = max(eo, sp);\n"
+    "  vec2 q = v_uv; if (horz) q.y += f*step; else q.x += f*step;\n"
+    "  o = vec4(textureLod(u_tex, q, 0.0).rgb, 1.0);\n"
+    "}\n";
+
+int gl_renderer_set_post_aa(int mode) {
+    if (mode < GL_POST_AA_OFF || mode > GL_POST_AA_FXAA_HQ) mode = GL_POST_AA_OFF;
+    s_post_aa = mode;   /* read by the GL thread at the next present */
+    return 1;
+}
+int gl_renderer_post_aa(void) { return s_post_aa; }
+uint64_t gl_renderer_post_aa_passes(void) { return s_paa_passes; }
+
+static void post_aa_release(void) {
+    s_paa_prog = 0; s_paa_tex = 0; s_paa_tw = s_paa_th = 0; s_paa_failed = 0;
+}
+
+/* The composed image in [lx,ly,lw,lh] of the bound window target, in place. */
+static void post_aa_apply(int lx, int ly, int lw, int lh) {
+    if (!s_post_aa || !s_ctx || s_paa_failed) return;
+    int ww = 0, wh = 0;
+    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    if (lx < 0) { lw += lx; lx = 0; }
+    if (ly < 0) { lh += ly; ly = 0; }
+    if (lx + lw > ww) lw = ww - lx;
+    if (ly + lh > wh) lh = wh - ly;
+    if (lw < 3 || lh < 3) return;
+    if (!s_paa_prog) {
+        s_paa_prog = build_program(PRESENT_VS, POST_AA_FS);
+        if (!s_paa_prog) { s_paa_failed = 1; return; }
+        s_paa_uTex = p_glGetUniformLocation(s_paa_prog, "u_tex");
+        s_paa_uRcp = p_glGetUniformLocation(s_paa_prog, "u_rcp");
+        s_paa_uUvRect = p_glGetUniformLocation(s_paa_prog, "u_uv_rect");
+        s_paa_uQuality = p_glGetUniformLocation(s_paa_prog, "u_quality");
+    }
+    p_glActiveTexture(PSXGL_TEXTURE0);
+    if (!s_paa_tex || s_paa_tw != lw || s_paa_th != lh) {
+        if (!s_paa_tex) glGenTextures(1, &s_paa_tex);
+        glBindTexture(GL_TEXTURE_2D, s_paa_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, lw, lh, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        s_paa_tw = lw; s_paa_th = lh;
+    } else {
+        glBindTexture(GL_TEXTURE_2D, s_paa_tex);
+    }
+#ifndef PSX_NO_DEBUG_TOOLS
+    if (s_paa_time < 0) {
+        const char *e = getenv("PSX_POST_AA_TIME");
+        s_paa_time = e ? atoi(e) : 0;
+        if (s_paa_time < 0) s_paa_time = 0;
+        if (s_paa_time > 64) s_paa_time = 64;
+    }
+    if (s_paa_time) { glFinish(); s_paa_t0 = SDL_GetPerformanceCounter(); }
+    const int reps = s_paa_time > 1 ? s_paa_time : 1;
+#else
+    const int reps = 1;
+#endif
+    for (int r = 0; r < reps; r++) {
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, lx, ly, lw, lh);
+    p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
+    glViewport(lx, ly, lw, lh);
+    p_glUseProgram(s_paa_prog);
+    p_glUniform1i(s_paa_uTex, 0);
+    p_glUniform2f(s_paa_uRcp, 1.0f / (float)lw, 1.0f / (float)lh);
+    p_glUniform1i(s_paa_uQuality, s_post_aa == GL_POST_AA_FXAA_HQ ? 1 : 0);
+    /* PRESENT_VS flips v; (0,1,1,0) cancels it for a bottom-up copy. */
+    p_glUniform4f(s_paa_uUvRect, 0.0f, 1.0f, 1.0f, 0.0f);
+    p_glBindVertexArray(s_present_vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    p_glBindVertexArray(0);
+    p_glUseProgram(0);
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+#ifndef PSX_NO_DEBUG_TOOLS
+    if (s_paa_time) {
+        glFinish();
+        s_paa_gpu_us_sum += (double)(SDL_GetPerformanceCounter() - s_paa_t0) * 1e6 /
+                            (double)SDL_GetPerformanceFrequency() / (double)reps;
+        s_paa_gpu_n++;
+    }
+#endif
+    s_paa_passes++;
+}
+
+/* Mean microseconds per pass since the last call (debug builds with
+ * PSX_POST_AA_TIME=N; 0 otherwise). Resets the mean. */
+double gl_renderer_post_aa_gpu_us(void) {
+#ifndef PSX_NO_DEBUG_TOOLS
+    double m = s_paa_gpu_n ? s_paa_gpu_us_sum / (double)s_paa_gpu_n : 0.0;
+    s_paa_gpu_us_sum = 0.0; s_paa_gpu_n = 0;
+    return m;
+#else
+    return 0.0;
+#endif
+}
+
 /* Present sampling. u_sharp==0 is the historical behaviour: sample straight at
  * v_uv, so the texture's own filter (NEAREST or LINEAR) decides everything.
  *
@@ -5961,6 +6145,7 @@ void gl_renderer_shutdown(void) {
     s_hold_tw = 0;
     s_hold_th = 0;
     s_interp_fbo = 0;   /* died with the context */
+    post_aa_release();
 }
 
 /* CPU-readout present (24-bit FMV frames and the PSX_GL_FORCE_CPU_PRESENT

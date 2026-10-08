@@ -604,6 +604,58 @@ the pixels to show it. Native keeps the window exactly as before.
 downsamples to the window. It accepts 1 to 32 in both `game.toml` and the
 player's `settings.toml`; 1 (the default) is native and unchanged.
 
+### Anti-aliasing (`antialiasing_mode`, `supersample`)
+
+Both are opt-in and change nothing unless set.
+
+```toml
+[video]
+supersample = 1.5               # 1.0..4.0, default 1.0
+antialiasing_mode = "fxaa"      # off (default) | fxaa | fxaa_hq
+```
+
+`supersample` multiplies the target of a line preset or Match display before
+it becomes a scale: Match display on a 1080 px monitor with 2.0 asks for 2160
+lines (S = 9) and the present's area resolve brings it back to 1080, which is
+ordered-grid SSAA of everything, 2D included. Native and the legacy
+`supersampling` factor are left alone. Dynamic resolution takes the result as
+its ceiling and steps under it as before. `PSX_SUPERSAMPLE=<factor>` overrides
+it for one run.
+
+To make supersampling the elastic part only, set the dynamic resolution floor
+to the output: `dynamic_resolution_min = "display"` (also `PSX_DYNRES_MIN=display`
+and settings.toml) means the selected internal resolution *without* the
+supersample factor, i.e. the monitor's own lines under Match display or the
+preset's lines otherwise. Dynamic resolution then steps between the
+supersampled ceiling and the output and never renders below it:
+
+```toml
+[video]
+internal_resolution = "display"
+supersample = 2.0
+dynamic_resolution = true
+dynamic_resolution_min = "display"
+```
+
+`antialiasing_mode` filters the composed game image on OpenGL: after the game
+quad (4:3, native-wide, Smooth motion and generated frames alike) and before
+hold-last capture, the OSD, screenshots and the swap. It reads only output
+pixels, so guest VRAM, readbacks, render passes and the Smooth motion sources
+are untouched; the bezel and OSD stay sharp; 24-bit FMV frames are not
+filtered. The PS1 HUD is part of the same image and is filtered too. `fxaa` is one copy and one full-screen pass (on an M4, at most 0.4 /
+0.7 / 1.5 ms at 1080p / 1440p / 4K, fence-timed with the copy); `fxaa_hq` lowers the contrast threshold and searches further along
+long edges. `PSX_AA_MODE=off|fxaa|fxaa_hq` overrides it for one run and the
+`post_aa` TCP command switches it live. The older boolean `antialiasing` key is
+unrelated: it is the linear present filter the launcher already persists.
+
+Not offered: MSAA. The hi-res surface *is* guest VRAM (texture pages, CLUTs,
+VRAM copies, readbacks and the mask stencil all sample or copy it between
+draws), so a multisampled target would need a resolve before every one of
+those and the mask/semi-transparency rules would have to run per sample; that
+is a renderer redesign, not an option. SMAA needs its area/search lookup
+textures and three passes; on an image that is already area-resolved from a
+higher internal resolution it buys little over FXAA, so it is left for later.
+
 The runtime clamps N per backend:
 
 - Software and Vulkan stop at 4.
