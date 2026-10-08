@@ -354,6 +354,25 @@ static void test_pipeline_user_settings() {
     check(back.has_frame_generation && back.frame_generation, "frame_generation round-trips");
     fs::remove(p);
 
+    /* [video] vsync: every mode parses from settings.toml and a launcher
+     * save writes back the same mode (vrr = 2 included). */
+    const struct { const char *text; int value; } vs[] = {
+        { "on", 1 }, { "immediate", 0 }, { "adaptive", -1 }, { "vrr", 2 } };
+    for (const auto &m : vs) {
+        p = write_temp("psxrecomp_vsync_read.toml",
+                       std::string("[video]\nvsync = \"") + m.text + "\"\n");
+        auto vr = PSXRecompV4::load_user_settings(p);
+        check(vr.has_vsync && vr.vsync == m.value, "settings vsync parses every mode");
+        fs::remove(p);
+        PSXRecompV4::UserSettings vo;
+        vo.has_vsync = true; vo.vsync = m.value;
+        p = fs::temp_directory_path() / "psxrecomp_vsync_rt.toml";
+        check(PSXRecompV4::save_user_settings(p, vo), "save_user_settings writes vsync");
+        auto vb = PSXRecompV4::load_user_settings(p);
+        check(vb.has_vsync && vb.vsync == m.value, "settings vsync round-trips every mode");
+        fs::remove(p);
+    }
+
     PSXRecompV4::UserSettings none;
     p = fs::temp_directory_path() / "psxrecomp_pipe_none.toml";
     check(PSXRecompV4::save_user_settings(p, none), "save_user_settings writes defaults");
@@ -422,6 +441,31 @@ static void test_pgxp_title_keys() {
           "pgxp_preserve_projection defaults OFF (unchanged behaviour)");
     check(!gc.runtime.video_pgxp_mod_only,
           "pgxp_mod_only defaults OFF (unchanged behaviour)");
+    check(!gc.runtime.video_pgxp_depth_buffer && !gc.runtime.video_pgxp_color_correction &&
+          gc.runtime.video_pgxp_seam == 0 && gc.runtime.video_pgxp_depth_threshold == 4096.0,
+          "PGXP renderer features default OFF (G1.14)");
+    fs::remove(p);
+
+    p = write_game_toml("psxrecomp_pgxp_render_keys.toml",
+        "[video]\n"
+        "pgxp_depth_buffer = true\n"
+        "pgxp_color_correction = true\n"
+        "pgxp_seam = \"wide\"\n"
+        "pgxp_depth_threshold = 2048.0\n");
+    gc = PSXRecompV4::load_game_config(p);
+    check(gc.runtime.video_pgxp_depth_buffer && gc.runtime.video_pgxp_color_correction &&
+          gc.runtime.video_pgxp_seam == 2 && gc.runtime.video_pgxp_depth_threshold == 2048.0,
+          "PGXP renderer keys are honoured");
+    fs::remove(p);
+
+    p = write_game_toml("psxrecomp_pgxp_render_bad.toml",
+        "[video]\n"
+        "pgxp_seam = \"huge\"\n");
+    {
+        bool bad = false;
+        try { (void)PSXRecompV4::load_game_config(p); } catch (const std::exception&) { bad = true; }
+        check(bad, "pgxp_seam must be off, fine or wide");
+    }
     fs::remove(p);
 
     p = write_game_toml("psxrecomp_pgxp_keys_dataflow.toml",
@@ -460,6 +504,70 @@ static void test_pgxp_title_keys() {
     fs::remove(p);
 }
 
+/* [timing] guest_cycle_scale and its declarative RAM gate (title constants). */
+static void test_timing_gate() {
+    fs::path p = write_game_toml("ves_timing_none.toml", "");
+    auto gc = PSXRecompV4::load_game_config(p);
+    check(gc.runtime.guest_cycle_scale == 1, "timing: default scale 1");
+    check(gc.runtime.guest_cycle_scale_gate.empty(), "timing: no gate by default");
+    check(!gc.runtime.guest_cycle_scale_gated, "timing: mod gate off by default");
+    fs::remove(p);
+
+    p = write_game_toml("ves_timing_one.toml",
+        "[timing]\nguest_cycle_scale = 64\n"
+        "guest_cycle_scale_gate = { addr = 0x800AC794, value = 0x180 }\n");
+    gc = PSXRecompV4::load_game_config(p);
+    check(gc.runtime.guest_cycle_scale == 64, "timing: scale 64");
+    check(gc.runtime.guest_cycle_scale_gate.size() == 1 &&
+          gc.runtime.guest_cycle_scale_gate[0].addr == 0x800AC794u &&
+          gc.runtime.guest_cycle_scale_gate[0].value == 0x180u &&
+          gc.runtime.guest_cycle_scale_gate[0].size == 4u &&
+          gc.runtime.guest_cycle_scale_gate[0].mask == 0xFFFFFFFFu,
+          "timing: single inline-table gate with defaults");
+    fs::remove(p);
+
+    p = write_game_toml("ves_timing_arr.toml",
+        "[timing]\nguest_cycle_scale = 8\nguest_cycle_scale_gated = true\n"
+        "guest_cycle_scale_gate = [ { addr = 0x800AC794, value = 0x180 },\n"
+        "  { addr = 0x00010003, size = 1, mask = 0x0F, value = 5 } ]\n");
+    gc = PSXRecompV4::load_game_config(p);
+    check(gc.runtime.guest_cycle_scale_gate.size() == 2 &&
+          gc.runtime.guest_cycle_scale_gate[1].size == 1u &&
+          gc.runtime.guest_cycle_scale_gate[1].mask == 0x0Fu &&
+          gc.runtime.guest_cycle_scale_gated, "timing: gate array + mod gate");
+    fs::remove(p);
+
+    p = write_game_toml("ves_timing_bad.toml",
+        "[timing]\nguest_cycle_scale_gate = { addr = 0x1F801070, value = 1 }\n");
+    bool rejected = false;
+    try { (void)PSXRecompV4::load_game_config(p); } catch (const std::exception&) { rejected = true; }
+    check(rejected, "timing: non-RAM gate address rejected");
+    fs::remove(p);
+
+    /* Oversized and negative values must be rejected, not wrapped to 32 bits. */
+    const struct { const char* body; const char* what; } bad[] = {
+        { "guest_cycle_scale_gate = { addr = 0x100010000, value = 1 }", "oversized addr" },
+        { "guest_cycle_scale_gate = { addr = -4, value = 1 }", "negative addr" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = 0x100000001 }", "oversized value" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = -1 }", "negative value" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = 1, size = 0x100000004 }", "oversized size" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = 1, size = -4 }", "negative size" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = 1, mask = 0x1FFFFFFFF }", "oversized mask" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = 1, mask = -1 }", "negative mask" },
+        { "guest_cycle_scale = 0", "scale 0" },
+        { "guest_cycle_scale = 65", "scale 65" },
+        { "guest_cycle_scale = -8", "negative scale" },
+        { "guest_cycle_scale = 0x100000008", "oversized scale" },
+    };
+    for (const auto& b : bad) {
+        p = write_game_toml("ves_timing_range.toml", std::string("[timing]\n") + b.body + "\n");
+        rejected = false;
+        try { (void)PSXRecompV4::load_game_config(p); } catch (const std::exception&) { rejected = true; }
+        check(rejected, (std::string("timing: rejected ") + b.what).c_str());
+        fs::remove(p);
+    }
+}
+
 int main() {
     test_internal_resolution_game_toml();
     test_internal_resolution_settings();
@@ -477,6 +585,7 @@ int main() {
     test_present_thread();
     test_pipeline_user_settings();
     test_pgxp_title_keys();
+    test_timing_gate();
 
     if (failures) {
         std::fprintf(stderr, "video_enhancement_settings_test: %d failure(s)\n",

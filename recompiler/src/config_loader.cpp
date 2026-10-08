@@ -613,6 +613,60 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             rt.parappa_timing_extra_late = parse_window("extra_late");
     }
 
+    // Optional [timing] block — title constants, never player settings.
+    // guest_cycle_scale: no CPU is emulated; recompiled code charges the
+    // guest clock a fixed cost per instruction, and scale N charges 1/N of
+    // it, so N times as much game code fits between two VBlanks while
+    // VBlank, timers, CD, SPU and DMA keep hardware time. 1 = faithful;
+    // values outside 1..64 are rejected. guest_cycle_scale_gated: the scale applies only
+    // while the mod gate is open (psx_mod_set_guest_cycle_scale_gate); see
+    // guest_cycle_scale_gate below for the declarative RAM gate.
+    if (cfg.contains("timing")) {
+        const toml::value& tm = toml::find(cfg, "timing");
+        if (tm.contains("guest_cycle_scale")) {
+            const long long n = toml::find<long long>(tm, "guest_cycle_scale");
+            if (n < 1 || n > 64)
+                throw std::runtime_error("[timing] guest_cycle_scale must be 1..64");
+            rt.guest_cycle_scale = static_cast<int>(n);
+        }
+        if (tm.contains("guest_cycle_scale_gated"))
+            rt.guest_cycle_scale_gated = toml::find<bool>(tm, "guest_cycle_scale_gated");
+        // guest_cycle_scale_gate: one inline table or an array of them,
+        // { addr, value, size = 4, mask = 0xFFFFFFFF }; all must hold.
+        if (tm.contains("guest_cycle_scale_gate")) {
+            const toml::value& g = toml::find(tm, "guest_cycle_scale_gate");
+            std::vector<toml::value> preds;
+            if (g.is_array()) preds = g.as_array();
+            else preds.push_back(g);
+            if (preds.size() > 8)
+                throw std::runtime_error("[timing] guest_cycle_scale_gate: at most 8 predicates");
+            // Range-check the signed TOML integer before narrowing, so an
+            // oversized or negative value cannot wrap into a valid one.
+            auto u32_field = [](const toml::value& pv, const char* key) -> uint32_t {
+                const long long v = toml::find<long long>(pv, key);
+                if (v < 0 || v > 0xFFFFFFFFLL)
+                    throw std::runtime_error(
+                        std::string("[timing] guest_cycle_scale_gate: ") + key +
+                        " must be 0..0xFFFFFFFF");
+                return static_cast<uint32_t>(v);
+            };
+            for (const toml::value& pv : preds) {
+                RuntimeConfig::GuestCycleScaleGatePred p;
+                p.addr  = u32_field(pv, "addr");
+                p.value = u32_field(pv, "value");
+                if (pv.contains("size")) p.size = u32_field(pv, "size");
+                if (pv.contains("mask")) p.mask = u32_field(pv, "mask");
+                const uint32_t phys = p.addr & 0x1FFFFFFFu;
+                if ((p.size != 1 && p.size != 2 && p.size != 4) ||
+                    (phys & (p.size - 1u)) != 0 || phys >= 0x00800000u)
+                    throw std::runtime_error(
+                        "[timing] guest_cycle_scale_gate: addr must be an aligned "
+                        "main-RAM address and size 1, 2 or 4");
+                rt.guest_cycle_scale_gate.push_back(p);
+            }
+        }
+    }
+
     // Optional [video] block — visual enhancement options. Kept on the same
     // RuntimeConfig so main.cpp consumes them alongside the other knobs.
     if (cfg.contains("video")) {
@@ -661,8 +715,7 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             int value = 0;
             bool ok = false;
             if (ir.is_string()) {
-                ok = psx_ir_parse(ir.as_string().str.c_str(), &value) != 0 &&
-                     value != PSX_IR_DISPLAY;
+                ok = psx_ir_parse(ir.as_string().str.c_str(), &value) != 0;
             } else if (ir.is_integer()) {
                 const auto n = ir.as_integer();
                 ok = n >= PSX_IR_MIN_LINES && n <= PSX_IR_MAX_LINES;
@@ -671,7 +724,7 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             if (!ok) {
                 throw std::runtime_error(
                     "[video] dynamic_resolution_min must be native, 720p, 1080p, "
-                    "1440p, 4k, 5k, 8k, or a number of lines");
+                    "1440p, 4k, 5k, 8k, display, or a number of lines");
             }
             rt.video_dynamic_resolution_min = value;
         }
@@ -693,6 +746,24 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         }
         if (video.contains("antialiasing")) {
             rt.video_antialiasing = toml::find<bool>(video, "antialiasing");
+        }
+        if (video.contains("antialiasing_mode")) {
+            const auto mode = toml::find<std::string>(video, "antialiasing_mode");
+            if (mode == "off")          rt.video_antialiasing_mode = 0;
+            else if (mode == "fxaa")    rt.video_antialiasing_mode = 1;
+            else if (mode == "fxaa_hq") rt.video_antialiasing_mode = 2;
+            else throw std::runtime_error(fmt::format(
+                "[video] antialiasing_mode must be \"off\", \"fxaa\" or \"fxaa_hq\": {}", mode));
+        }
+        if (video.contains("supersample")) {
+            const auto& v = toml::find(video, "supersample");
+            const double f = v.is_integer() ? static_cast<double>(v.as_integer())
+                                            : toml::get<double>(v);
+            if (!(f >= 1.0 && f <= 4.0)) {
+                throw std::runtime_error(fmt::format(
+                    "[video] supersample out of range (1.0..4.0): {}", f));
+            }
+            rt.video_supersample_milli = static_cast<int>(f * 1000.0 + 0.5);
         }
         if (video.contains("texture_filtering")) {
             const auto mode = toml::find<std::string>(video, "texture_filtering");
@@ -741,6 +812,19 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         if (video.contains("pgxp_preserve_projection")) {
             rt.video_pgxp_preserve_projection =
                 toml::find<bool>(video, "pgxp_preserve_projection");
+        }
+        if (video.contains("pgxp_depth_buffer"))
+            rt.video_pgxp_depth_buffer = toml::find<bool>(video, "pgxp_depth_buffer");
+        if (video.contains("pgxp_color_correction"))
+            rt.video_pgxp_color_correction = toml::find<bool>(video, "pgxp_color_correction");
+        if (video.contains("pgxp_depth_threshold"))
+            rt.video_pgxp_depth_threshold = toml::find<double>(video, "pgxp_depth_threshold");
+        if (video.contains("pgxp_seam")) {
+            const auto m = toml::find<std::string>(video, "pgxp_seam");
+            if (m == "off") rt.video_pgxp_seam = 0;
+            else if (m == "fine") rt.video_pgxp_seam = 1;
+            else if (m == "wide") rt.video_pgxp_seam = 2;
+            else throw std::runtime_error("[video] pgxp_seam must be \"off\", \"fine\" or \"wide\"");
         }
         if (video.contains("pgxp_mod_only")) {
             rt.video_pgxp_mod_only = toml::find<bool>(video, "pgxp_mod_only");
@@ -808,13 +892,24 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         if (video.contains("frame_generation")) {
             rt.video_frame_generation = toml::find<bool>(video, "frame_generation");
         }
+        if (video.contains("frame_generation_method")) {
+            const auto m = toml::find<std::string>(video, "frame_generation_method");
+            if      (m == "redraw")       rt.video_frame_generation_method = 0;
+            else if (m == "reprojection") rt.video_frame_generation_method = 1;
+            else throw std::runtime_error(fmt::format(
+                "[video] frame_generation_method must be \"redraw\"|\"reprojection\": {}", m));
+        }
         if (video.contains("vsync")) {
             const auto mode = toml::find<std::string>(video, "vsync");
             if      (mode == "on"  || mode == "vsync")     rt.video_vsync = 1;
             else if (mode == "off" || mode == "immediate") rt.video_vsync = 0;
             else if (mode == "adaptive")                   rt.video_vsync = -1;
+            // vrr: variable refresh (G-Sync/FreeSync, ProMotion): present
+            // each frame when it is ready (swap interval 0), Smooth motion
+            // targets the panel's maximum refresh and never exceeds it.
+            else if (mode == "vrr")                        rt.video_vsync = 2;
             else throw std::runtime_error(fmt::format(
-                "[video] vsync must be \"on\"|\"off\"|\"immediate\"|\"adaptive\": {}", mode));
+                "[video] vsync must be \"on\"|\"off\"|\"immediate\"|\"adaptive\"|\"vrr\": {}", mode));
         }
         if (video.contains("frame_interpolation")) {
             rt.video_frame_interpolation =
@@ -1724,6 +1819,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     bool ws_hud_sprt_squash = false;
     bool ws_auto_ui_squash = false;
     bool ws_auto_ui_in_place = false;
+    bool ws_auto_ui_proportional = false;
     bool ws_full_2d = false;
     bool ws_gte_game_mode = false;
     bool ws_precise_nclip = false;
@@ -1886,6 +1982,15 @@ GameConfig load_game_config(const fs::path& config_path_in) {
                 throw std::runtime_error(fmt::format(
                     "{}: [widescreen] auto_ui_anchor must be \"edges\" or "
                     "\"in_place\", got \"{}\"", config_path.string(), anchor));
+        }
+        if (ws.contains("auto_ui_size")) {
+            const auto size = toml::find<std::string>(ws, "auto_ui_size");
+            if (size == "proportional")
+                ws_auto_ui_proportional = true;
+            else if (size != "original")
+                throw std::runtime_error(fmt::format(
+                    "{}: [widescreen] auto_ui_size must be \"original\" or "
+                    "\"proportional\", got \"{}\"", config_path.string(), size));
         }
         if (ws.contains("full_2d"))
             ws_full_2d = toml::find<bool>(ws, "full_2d");
@@ -2531,6 +2636,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         /*ws_hud_sprt_squash*/    ws_hud_sprt_squash,
         /*ws_auto_ui_squash*/      ws_auto_ui_squash,
         /*ws_auto_ui_in_place*/    ws_auto_ui_in_place,
+        /*ws_auto_ui_proportional*/ ws_auto_ui_proportional,
         /*data_shard_funcs*/      data_shard_funcs,
         /*mod_function_entry_funcs*/ mod_function_entry_funcs,
         /*mod_instruction_sites*/ mod_instruction_sites,
@@ -2718,8 +2824,7 @@ UserSettings load_user_settings(const fs::path& path) {
             const toml::value& ir = toml::find(v, "dynamic_resolution_min");
             int value = 0;
             if (ir.is_string()) {
-                if (psx_ir_parse(ir.as_string().str.c_str(), &value) &&
-                    value != PSX_IR_DISPLAY) {
+                if (psx_ir_parse(ir.as_string().str.c_str(), &value)) {
                     s.dynamic_resolution_min = value; s.has_dynamic_resolution_min = true;
                 }
             } else if (ir.is_integer()) {
@@ -2824,6 +2929,7 @@ UserSettings load_user_settings(const fs::path& path) {
             if      (m == "on"  || m == "vsync")    { s.vsync = 1;  s.has_vsync = true; }
             else if (m == "off" || m == "immediate"){ s.vsync = 0;  s.has_vsync = true; }
             else if (m == "adaptive")               { s.vsync = -1; s.has_vsync = true; }
+            else if (m == "vrr")                    { s.vsync = 2;  s.has_vsync = true; }
         });
         if (v.contains("frame_interpolation")) try_get([&]{
             s.frame_interpolation = toml::find<bool>(v, "frame_interpolation");
@@ -3128,8 +3234,7 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     if (s.has_dynamic_resolution)
         f << "dynamic_resolution = " << (s.dynamic_resolution ? "true" : "false") << "\n";
     if (s.has_dynamic_resolution_min &&
-        psx_ir_value_valid(s.dynamic_resolution_min) &&
-        s.dynamic_resolution_min != PSX_IR_DISPLAY) {
+        psx_ir_value_valid(s.dynamic_resolution_min)) {
         const char* id = psx_ir_id_for(s.dynamic_resolution_min);
         if (id)
             f << "dynamic_resolution_min = \"" << id << "\"\n";
@@ -3183,7 +3288,8 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     if (s.has_frame_generation)
         f << "frame_generation = " << (s.frame_generation ? "true" : "false") << "\n";
     if (s.has_vsync)
-        f << "vsync             = \"" << (s.vsync == 0 ? "immediate" : s.vsync < 0 ? "adaptive" : "on") << "\"\n";
+        f << "vsync             = \"" << (s.vsync == 0 ? "immediate" : s.vsync < 0 ? "adaptive"
+                                         : s.vsync == 2 ? "vrr" : "on") << "\"\n";
     if (s.has_frame_interpolation)
         f << "frame_interpolation = " << (s.frame_interpolation ? "true" : "false") << "\n";
     if (s.has_frame_interpolation_fps)

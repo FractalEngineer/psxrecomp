@@ -6,6 +6,10 @@ Use **OpenGL** to display replacements. Software and Vulkan can collect dumps
 but continue to display the original artwork. Tomba USA (`SCUS-94236`) is the
 first integrated game target; game projects can supply their own manifest for
 the same `psx.hd-textures` plugin.
+A title manifest can also ship a pack inside its own package and point the
+`pack` resource at it with `default = "<folder>"` (see
+[MOD_PACKAGES.md](MOD_PACKAGES.md#owner-selected-resources)); a folder the
+player selects still takes precedence.
 
 Tomba provides an [optional drop-in example pack](https://github.com/mstan/TombaRecomp/tree/master/examples/hd-texture-pack)
 with five synthetic checkerboards and a README inside its `SCUS-94236` pack
@@ -49,10 +53,14 @@ the runtime scans them again. Disabling the mod restores the original artwork.
 The plugin does not write replacement pixels into native VRAM or change the
 save namespace.
 
-HD replacements and dumping use synchronous rendering for safety. While
-either is enabled, Render thread and Smooth motion do not run; their saved
-settings are preserved. Disable both and relaunch to use those features.
-Dynamic resolution is still available with HD textures.
+HD replacements and dumping run on the render thread when it is enabled:
+residency changes travel with the recorded commands, and native VRAM (CPU
+raster under HD authority) is published to the guest at every sync point.
+A GP0(A0) upload holds the context from its header to its commit, so its mask
+checks and partial readbacks see every earlier draw; that also holds when HD
+turns on mid-upload or a savestate restores a state mid-upload. Smooth motion
+generates frames with HD replacements too: in-between draws resolve the same
+replacements, never write native VRAM and never dump. Dynamic resolution is available.
 
 Capture defaults follow the referenced DuckStation policy: track uploads,
 union their used rectangles per palette, skip direct-color C16 textures, ignore
@@ -75,9 +83,19 @@ Pack artwork is supplied separately. Matching depends on native game pixels
 and palettes; a different region or revision may not match. PNG, JPEG, and static WebP are supported,
 with a maximum of 8192 pixels per side, 64 MiB encoded, and 64 MiB decoded RGBA.
 Unsupported identities, configuration features, or images fall back to the
-original artwork. After loading a savestate, upload-based replacements need
-fresh texture uploads from the game before they can match again; page-based
-matching remains available. See [DuckStation texture format notes](DUCKSTATION_TEXTURE_FORMAT.md)
+original artwork. A savestate load or rewind restages VRAM; Beetle-keyed
+upload rectangles already seen in the session are then re-admitted when their
+restored words still hash to the same key. That re-hash is bounded: at most
+256 rectangles covering at most one VRAM's worth of words (about 1 MiB of
+CRC per load or rewind step, oldest dropped first). Saving a state also writes the Beetle-format upload
+residency beside the slot (`*.hdres`, host metadata only, never in the `.pst`).
+Loading that slot restores it when the restored VRAM is exactly the VRAM it
+was saved with and the same pack is active (the sidecar carries a CRC of the
+whole native VRAM and the pack's identity, a hash of its replacement keys),
+so a HUD uploaded once per race keeps its replacement. Other loads (no
+sidecar, a different pack, DuckStation `texupload` names, rewind or netplay
+states) need fresh texture uploads from the game before upload-based
+replacements match again; page-based matching remains available. See [DuckStation texture format notes](DUCKSTATION_TEXTURE_FORMAT.md)
 for the exact supported filenames, hashing, alpha behavior, and limitations.
 
 Development builds expose the [TCP `hd_textures` command](TCP_COMMANDS.md).

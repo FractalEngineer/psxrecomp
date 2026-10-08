@@ -54,6 +54,10 @@ int mod_texture_packet_precision(uint32_t source, float q[3], float xy[6]) {
 }
 
 static uint32_t test_ram[0x00200000u / 4u];
+/* The enhancement GPU-DMA aperture (mod_memory.h): a test allocates it by
+ * setting test_aperture_used; reads and keys then follow the real rules. */
+static uint32_t test_aperture[0x00020000u / 4u];
+static uint32_t test_aperture_used;
 
 static struct {
     int calls;
@@ -81,25 +85,28 @@ static int g_test_precise_triangles = 0;
 static int g_test_textured_triangles = 0;
 
 /* Bounding box of every flat/gouraud triangle drawn since the last reset. */
-static struct { int calls, min_x, max_x; } gpu_exec_triangles;
+static struct { int calls, min_x, max_x, min_y, max_y; } gpu_exec_triangles;
 static inline void gpu_exec_reset_triangles(void) {
     gpu_exec_triangles.calls = 0;
-    gpu_exec_triangles.min_x = 1 << 30;
-    gpu_exec_triangles.max_x = -(1 << 30);
+    gpu_exec_triangles.min_x = gpu_exec_triangles.min_y = 1 << 30;
+    gpu_exec_triangles.max_x = gpu_exec_triangles.max_y = -(1 << 30);
 }
 static inline void gpu_exec_record_triangle(int x0, int y0, int x1, int y1,
                                      int x2, int y2) {
-    const int xs[3] = {x0, x1, x2};
-    (void)y0; (void)y1; (void)y2;
+    const int xs[3] = {x0, x1, x2}, ys[3] = {y0, y1, y2};
     gpu_exec_triangles.calls++;
     for (int i = 0; i < 3; i++) {
         if (xs[i] < gpu_exec_triangles.min_x) gpu_exec_triangles.min_x = xs[i];
         if (xs[i] > gpu_exec_triangles.max_x) gpu_exec_triangles.max_x = xs[i];
+        if (ys[i] < gpu_exec_triangles.min_y) gpu_exec_triangles.min_y = ys[i];
+        if (ys[i] > gpu_exec_triangles.max_y) gpu_exec_triangles.max_y = ys[i];
     }
 }
 
 uint32_t psx_read_word(uint32_t addr) {
-    uint32_t phys = addr & 0x1FFFFFFFu;
+    uint32_t phys = addr & 0x1FFFFFFFu, off;
+    if (psx_mod_gpu_dma_aperture_offset_for(phys, 4u, test_aperture_used, &off))
+        return test_aperture[off / 4u];
     if (phys <= 0x00200000u - 4u)
         return test_ram[phys / 4u];
     return 0;
@@ -242,7 +249,12 @@ void color_lut_map555(const ColorLut *lut, uint16_t bgr555,
     if (g) *g = (uint8_t)(((bgr555 >> 5) & 0x1Fu) << 3);
     if (b) *b = (uint8_t)(((bgr555 >> 10) & 0x1Fu) << 3);
 }
-uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) { return address; }
+uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) {
+    return psx_mod_gpu_dma_resolve_address_for(address, test_aperture_used);
+}
+uint32_t psx_gpu_packet_key(uint32_t address) {
+    return psx_gpu_packet_key_for(address, test_aperture_used);
+}
 void text_xlate_vram_upload(int x, int y, int w, int h) {
     (void)x; (void)y; (void)w; (void)h;
 }
@@ -271,6 +283,9 @@ void gr_set_precise_triangle(int enabled, int32_t x0, int32_t y0,
 }
 void gr_set_perspective_triangle(int enabled, float q0, float q1, float q2) {
     (void)enabled; (void)q0; (void)q1; (void)q2;
+}
+void gr_set_depth_triangle(int enabled, float z0, float z1, float z2) {
+    (void)enabled; (void)z0; (void)z1; (void)z2;
 }
 void gr_fill_rect(int x, int y, int w, int h, uint16_t color) {
     (void)x; (void)y; (void)w; (void)h; (void)color;
@@ -363,6 +378,8 @@ uint16_t gr_vram_read(int x, int y) { (void)x; (void)y; return 0; }
 void gr_vram_transfer_in(int x, int y, int w, int h, const uint16_t *data) {
     (void)x; (void)y; (void)w; (void)h; (void)data;
 }
+void gr_vram_upload_commit(int x,int y,int w,int h,const uint16_t *d) { gr_vram_transfer_in(x,y,w,h,d); }
+void gr_vram_upload_set_open(int open) { (void)open; }
 void gr_vram_transfer_out(int x, int y, int w, int h, uint16_t *data) {
     (void)x; (void)y; (void)w; (void)h; (void)data;
 }
@@ -410,6 +427,8 @@ void gl_renderer_note_wide_triangle_recovery(int enabled) {
 }
 /* Smooth motion (frame generation) vertex sources: off in these fixtures. */
 int gl_renderer_frame_generation(void) { return 0; }
+/* PGXP renderer features: off in these fixtures. */
+int gl_renderer_pgxp_render_wanted(void) { return 0; }
 void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int32_t h[3],
                            const int32_t x[3], const int32_t y[3]) {
     (void)id; (void)pc; (void)h; (void)x; (void)y;

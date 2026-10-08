@@ -450,6 +450,15 @@ struct RuntimeConfig {
     // Defaults to true.
     bool                  video_antialiasing = true;
 
+    // antialiasing_mode: post-process anti-aliasing of the composed game image
+    // (OpenGL; GL_POST_AA_* in gpu_gl_renderer.h): "off" (default) | "fxaa" |
+    // "fxaa_hq". Separate from the legacy antialiasing bool above, which the
+    // launcher and settings.toml already persist as the linear present filter.
+    int                   video_antialiasing_mode = 0;
+    // supersample: factor on the internal-resolution target (Match display or
+    // a line preset), 1.0..4.0, kept in thousandths (internal_resolution.h).
+    int                   video_supersample_milli = 1000;
+
     // texture_filtering: "nearest" (default, native PSX look) | "bilinear"
     // (smooths textures and 2D backgrounds). Stored as 0/1.
     int                   video_texture_filter = 0;
@@ -544,6 +553,20 @@ struct RuntimeConfig {
     // over TCP (pgxp verb). docs/ENHANCEMENTS.md G1.11.
     bool                  video_pgxp_preserve_projection = false;
 
+    // PGXP renderer features (GL backend; docs/ENHANCEMENTS.md G1.14), all
+    // off by default. pgxp_depth_buffer: per-vertex GTE depth with a LEQUAL
+    // depth test for opaque 3D polygons (2D / unproven polygons never test
+    // or write), cleared per drawing area, after fills and when the average
+    // SZ jumps back by pgxp_depth_threshold (SZ units, default 4096).
+    // pgxp_color_correction: perspective-correct Gouraud colour.
+    // pgxp_seam: expand depth-tested opaque 3D polygons (needs
+    // pgxp_depth_buffer) to close T-junction cracks above 1x ("off",
+    // "fine" = 1 output px, "wide" = half a native px).
+    bool                  video_pgxp_depth_buffer = false;
+    bool                  video_pgxp_color_correction = false;
+    int                   video_pgxp_seam = 0;
+    double                video_pgxp_depth_threshold = 4096.0;
+
     // pgxp_mod_only: the title ships PGXP through the psx.enhancement.pgxp
     // mod (typically a default-on override of it), which is then the one
     // switch. The [video] geometry_correction / perspective_texturing /
@@ -582,6 +605,25 @@ struct RuntimeConfig {
     // frame of latency (docs/FRAME_GENERATION.md). Off by default;
     // PSX_FRAME_GEN=0/1 overrides.
     bool                  video_frame_generation = false;
+    // frame_generation_method: how in-between frames are made. 0 "redraw"
+    // (default: the recorded list drawn again), 1 "reprojection" (opt-in per
+    // title: the newer real frame warped; tuned on R4). PSX_FRAME_GEN_METHOD
+    // overrides. docs/FRAME_GENERATION.md.
+    int                   video_frame_generation_method = 0;
+
+    // [timing] guest_cycle_scale (1 = faithful, 1..64) and its gate; title
+    // constants from game.toml only. See config_loader.cpp.
+    int                   guest_cycle_scale = 1;
+    bool                  guest_cycle_scale_gated = false;
+    // guest_cycle_scale_gate: declarative RAM gate, judged at every VBlank;
+    // the scale applies only while every predicate holds.
+    struct GuestCycleScaleGatePred {
+        uint32_t addr  = 0;           // guest main-RAM address (any segment)
+        uint32_t size  = 4;           // 1, 2 or 4 bytes, aligned
+        uint32_t mask  = 0xFFFFFFFFu;
+        uint32_t value = 0;           // open while (word & mask) == value
+    };
+    std::vector<GuestCycleScaleGatePred> guest_cycle_scale_gate;
 
     // present_thread: with render_thread, composed frames go to offscreen
     // slots and a present thread (second, shared GL context on the window)
@@ -1012,6 +1054,11 @@ struct GameConfig {
     // For HUD widgets that combine flat quads with GTE-projected parts the
     // correction cannot move (Spider-Man's compass ring and 3D arrow).
     bool                  ws_auto_ui_in_place = false;
+    // auto_ui_size = "proportional": beyond 16:9 the auto-UI HUD shrinks by
+    // sqrt((16:9) / aspect) about each widget's anchor, so a wide window
+    // does not show a 4:3-height HUD across a much wider view. "original"
+    // (default) keeps the HUD at the display height's scale.
+    bool                  ws_auto_ui_proportional = false;
 
     // [data_shards] funcs: functions that get the memoized pure-function
     // replay entry/return hooks (psx_datashard_enter/psx_datashard_ret).

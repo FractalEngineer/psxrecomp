@@ -11,4 +11,7 @@ void gpu_hd_textures_release_image(GpuHdTextureImage* image) {
 }
 void gpu_hd_textures_note_applied(void) {}
 void gpu_hd_textures_reset_tracking(void) {}
+void gpu_hd_textures_restage(void) {}
+void gpu_hd_textures_bind_vram(const uint16_t* vram) { (void)vram; }
+void gpu_hd_textures_suppress_dumps(int on) { (void)on; }
 #endif

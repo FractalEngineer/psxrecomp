@@ -39,6 +39,14 @@ void gpu_hd_textures_observe_draw(uint16_t texpage, uint16_t clut_x,
 /* Native VRAM and residency hooks. A full restage resets identity rather than
  * pretending a savestate is an original texture upload. */
 void gpu_hd_textures_set_vram(const uint16_t* vram);
+/* Move to another copy of the same native VRAM (the GL render thread's
+ * private copy and gpu.c's array match at every hand-off); keeps residency. */
+void gpu_hd_textures_bind_vram(const uint16_t* vram);
+/* Smooth motion's generated frames replay real frames' draws for
+ * presentation only: their queries never dump (renderer thread). */
+void gpu_hd_textures_suppress_dumps(int on);
+/* Residency is hashed from the bound native VRAM after the write; words may
+ * be NULL (a replayed upload whose payload already reached that VRAM). */
 void gpu_hd_textures_track_upload(int x, int y, int width_words, int height,
                                  const uint16_t* words);
 /* Header-before-payload invalidation and pre/post native copy observations. */
@@ -48,6 +56,17 @@ void gpu_hd_textures_begin_copy(int source_x, int source_y, int destination_x,
 void gpu_hd_textures_end_copy(void);
 void gpu_hd_textures_invalidate(int x, int y, int width_words, int height);
 void gpu_hd_textures_reset_tracking(void);
+/* A full VRAM restage (savestate, rewind): reset residency, then re-admit the
+ * Beetle-keyed upload rectangles seen this session whose restored words still
+ * carry the same key. */
+void gpu_hd_textures_restage(void);
+/* Savestate sidecar: the Beetle upload residency at save time, bound to a
+ * CRC of the whole native VRAM. Loading it after a restage restores the
+ * identities only if the restored VRAM is exactly the VRAM they described,
+ * so replacements match again without fabricating an upload. save returns 0
+ * when there is nothing to keep (no Beetle-format session); free(*data). */
+int gpu_hd_textures_residency_save(uint8_t** data, size_t* size);
+int gpu_hd_textures_residency_load(const uint8_t* data, size_t size);
 
 typedef struct GpuHdTextureImage {
     const uint8_t* rgba;

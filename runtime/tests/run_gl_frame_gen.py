@@ -5,7 +5,11 @@ scale and present path (VRAM, native-wide), the fixture runs with the render
 thread on and generation off, then on (forced). The real presented images, in
 order, must be identical; the run with generation on must have presented
 generated frames and passes its own endpoint checks (phase 1 = the newer real
-image, phase 0 = the older one). Build flags and skips as
+image, phase 0 = the older one; in redraw, the default, nothing of
+reprojection ran or was allocated). Then with reprojection
+(FG_METHOD=reprojection, with and without PGXP depth): the warp's pixel checks
+pass and the real images are those of the run with generation off. Build
+flags and skips as
 run_gl_render_thread.py.
 """
 import argparse
@@ -28,6 +32,12 @@ WIN_LIBS = ["opengl32", "kernel32", "user32", "gdi32", "winmm", "imm32", "ole32"
 SKIP_EXIT = 77
 WINDOWS = os.name == "nt" or platform.system().startswith(("MINGW", "MSYS", "CYGWIN"))
 KEYS = ("real",)
+# FG_PGXP values: the scene without PGXP renderer features first.
+PGXP_FEATURES = ("none", "depth", "color", "depth,color", "seam", "depth,seam")
+# Seam expansion applies only above 1x and only to depth-tested triangles:
+# these feature sets must draw exactly like the named one (scale 1: all
+# scales), every other one must differ from "none".
+PGXP_SAME = {("seam", None): "none", ("depth,seam", 1): "depth"}
 
 
 def parse(stdout):
@@ -139,6 +149,30 @@ def main():
                 print(f"FAIL scale {s} {path} {timing}: generated frames off={runs[0]['generated']} "
                       f"on={runs[1]['generated']}")
                 ok = False
+            # Reprojection ([video] frame_generation_method = "reprojection",
+            # opt-in): the fixture checks the warp's pixels (and with PGXP
+            # depth, that the warp leaves no depth for the cars); the real
+            # frames stay those of the run with generation off.
+            # pan 1 (the scene above, with PGXP depth): its real frames must be
+            # the generation-off run's; pan 6: a camera move the warp must follow.
+            for pgxp, pan in (("1", "1"), ("0", "6")):
+                env = dict(os.environ, FG_METHOD="reprojection", FG_RP_DEPTH=pgxp, FG_PAN=pan)
+                command = [str(c) for c in (probe, s, 1, path, args.frames, timing)]
+                r = subprocess.run(command, cwd=dest, capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace", env=env)
+                receipt.append({"cmd": command, "env": {"FG_METHOD": "reprojection", "FG_RP_DEPTH": pgxp, "FG_PAN": pan},
+                                "exit": r.returncode, "stdout": r.stdout, "stderr": r.stderr[-4000:]})
+                (dest / "receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+                p = parse(r.stdout)
+                info = [l for l in r.stdout.splitlines()
+                        if l.startswith(("reproject", "pgxp", "presents"))]
+                print(f"scale {s} {path} {timing} reprojection pgxp={pgxp} pan={pan}: exit={r.returncode}", info,
+                      r.stderr.strip()[-800:])
+                m = re.search(r"^presents=(\d+) generated=(\d+)$", r.stdout, re.M)
+                if (r.returncode or p["failures"] != 0 or not m or int(m[2]) <= 0
+                        or (pan == "1" and p["real"] != runs[0]["real"])):
+                    print(f"FAIL scale {s} {path} {timing} reprojection pgxp={pgxp} pan={pan}")
+                    ok = False
             # Present thread ([video] present_thread): the fixture checks the
             # window shows every composed image bit for bit, in order. The real
             # images match the direct-swap run: bit for bit, except that
@@ -187,6 +221,47 @@ def main():
                 if worst > 1 or worst_px > 0.0005:
                     print(f"FAIL scale {s} {path} {timing} fg={fg}: present thread changed real frames")
                     ok = False
+    # PGXP renderer features (docs/ENHANCEMENTS.md G1.14): the scene as PGXP
+    # 3D triangles that overlap out of painter order. Per feature set, the
+    # real frames are the same with generation off and on, and the fixture's
+    # own check holds: the generated frame at phase 1 equals the real one
+    # (generated frames honour the features). Each feature changes the
+    # real image (it is visible in this scene), so the comparison means
+    # something.
+    for s in [int(v) for v in args.scales.split(",") if v]:
+        digests = {}
+        for feats in PGXP_FEATURES:
+            runs = {}
+            for fg in (0, 1):
+                sub = dest / f"pgxp-{s}-{feats}-{fg}"
+                sub.mkdir(exist_ok=True)
+                cmd = [str(c) for c in (probe, s, fg, "vram", args.frames, "flip")]
+                r = subprocess.run(cmd, cwd=sub, capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace", env=dict(os.environ, FG_PGXP=feats))
+                p = parse(r.stdout)
+                tail = r.stdout.strip().splitlines()[-5:]
+                print(f"scale {s} pgxp={feats} frame_generation={fg}: exit={r.returncode}", tail,
+                      r.stderr.strip()[-800:])
+                if r.returncode or p["failures"] != 0 or p["real"] is None:
+                    ok = False
+                runs[fg] = p["real"]
+            if runs[0] != runs[1]:
+                print(f"FAIL scale {s} pgxp={feats}: the real frames differ with generation on")
+                ok = False
+            digests[feats] = runs[0]
+        for feats in PGXP_FEATURES[1:]:
+            same = PGXP_SAME.get((feats, None)) or PGXP_SAME.get((feats, s))
+            if same:
+                if digests[feats] != digests[same]:
+                    print(f"FAIL scale {s} pgxp={feats}: differs from pgxp={same}")
+                    ok = False
+                continue
+            if digests[feats] == digests[PGXP_FEATURES[0]]:
+                print(f"FAIL scale {s} pgxp={feats}: the feature does not change the real image")
+                ok = False
+        if s > 1 and digests["depth,seam"] == digests["depth"]:
+            print(f"FAIL scale {s}: seam expansion does not change the depth-tested image")
+            ok = False
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

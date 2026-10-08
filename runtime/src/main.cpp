@@ -97,6 +97,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "recomp_audio_drc.h"
 #include "memcard.h"
 #include "debug_server.h"
+#include "host_sampler.h"
 #include "crash_trace.h"
 #include "freeze_heartbeat.h"
 #include "config_loader.h"
@@ -1219,6 +1220,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE void psx_web_set_smooth_60fps(int enabled) {
 /* [video] options, resolved from the game config (defaults: native + AA). */
 static int           g_video_scale = 1;     /* internal-resolution SSAA factor */
 static bool          g_video_aa    = true;  /* linear present filtering */
+static int           g_video_post_aa = 0;   /* [video] antialiasing_mode / PSX_AA_MODE (GL_POST_AA_*) */
+static int           g_video_ss_milli = 1000; /* [video] supersample / PSX_SUPERSAMPLE */
 /* FMV present reconstruction (VIDEO_FMV_FILTER_*), pushed to the GL renderer
  * once the config is resolved. Only consulted while g_video_aa is on. */
 static int           g_video_fmv_filter = PSXRecompV4::VIDEO_FMV_FILTER_DEFAULT;
@@ -1275,6 +1278,11 @@ static float         g_video_pgxp_tolerance        = 0.5f;
  * Defaults keep the historical behaviour. game.toml [video] only. */
 static int           g_video_pgxp_position_fallback   = 1;
 static int           g_video_pgxp_preserve_projection = 0;
+/* PGXP renderer features (G1.14); PSX_PGXP_DEPTH / _COLOR / _SEAM override. */
+static int           g_video_pgxp_depth_buffer = 0;
+static int           g_video_pgxp_color_correction = 0;
+static int           g_video_pgxp_seam = 0;
+static float         g_video_pgxp_depth_threshold = 4096.0f;
 /* [video] pgxp_mod_only (G1.12): the title ships PGXP through the
  * psx.enhancement.pgxp mod, which is then the one switch -- the [video]
  * geometry_correction / perspective_texturing / pgxp_cpu_mode values are not
@@ -1326,6 +1334,9 @@ struct DynresHost {
     DynrtController rt{};
     GlRthCosts last_costs{};
     uint64_t last_bp_ns = 0;
+    /* Smooth motion's generated frames (dynres_tick_rt). */
+    uint64_t last_gen = 0, last_gen_meas = 0, last_gen_cost_ns = 0;
+    double gen_mean_s = 0.0, gen_pending_s = 0.0;
     unsigned long long rt_last_windows = 0;
     bool rt_trace_header = false;
     double rt_win_cpu_ms = 0.0, rt_win_gpu_ms = 0.0;   /* last window's means */
@@ -1364,8 +1375,9 @@ static int effective_internal_resolution(void) {
 static void apply_internal_resolution(int display_px_h) {
     const int preset = effective_internal_resolution();
     if (preset == PSX_IR_UNSET) return;
-    g_video_scale = psx_resolve_internal_scale(preset, g_video_ref_lines,
-                                               display_px_h, video_scale_ceiling());
+    g_video_scale = psx_resolve_internal_scale_ss(preset, g_video_ref_lines,
+                                                  display_px_h, video_scale_ceiling(),
+                                                  g_video_ss_milli);
 }
 
 /* The value the launcher row starts on: the preset, or the legacy factor shown
@@ -1459,6 +1471,7 @@ static int           g_render_thread = 0;
 static int           g_render_thread_frames = 2;
 /* [video] frame_generation (docs/FRAME_GENERATION.md), with the render thread. */
 static int           g_frame_generation = 0;
+static int           g_frame_generation_method = 0;   /* [video] frame_generation_method: 0 redraw, 1 reprojection */
 /* [video] present_thread (docs/RENDER_THREAD.md), with the render thread. */
 static int           g_present_thread = 0;
 /* The player's persisted pipeline choice (game.toml default < settings.toml),
@@ -1504,6 +1517,7 @@ static_assert((int)PSX_MOD_CONTROLLER_ANALOG ==
 static_assert((int)PSX_MOD_CONTROLLER_DIGITAL ==
               (int)PSXRecompV4::PAD_MODE_DIGITAL);
 static double        g_host_refresh_hz = 0.0;
+static double        g_host_refresh_max_hz = 0.0;   /* panel maximum (VRR) */
 static constexpr double PSX_FRAME_PERIOD_MS = 1000.0 / 59.94;
 static double        g_guest_frame_period_ms = PSX_FRAME_PERIOD_MS;
 static double        g_frame_period_ms = PSX_FRAME_PERIOD_MS;
@@ -1602,6 +1616,15 @@ static int g_netplay_local_viewport_projection = 0;
  * "native_wide"). Projection views keep the shared presentation path. */
 static bool netplay_local_viewport_native_wide(void) {
     return g_netplay_local_viewport == 1 && !g_netplay_local_viewport_projection;
+}
+
+/* [widescreen] auto_ui_size from game.toml; a mod may override it per session
+ * (psx_mod_set_widescreen_hud_size), reset_mod_owned_presentation restores. */
+static bool g_ws_auto_ui_proportional_cfg = false;
+extern "C" int psx_mod_set_widescreen_hud_size(int proportional) {
+    if (proportional != 0 && proportional != 1) return 0;
+    gpu_ws_set_auto_ui_proportional(proportional);
+    return 1;
 }
 
 extern "C" int psx_mod_set_fixed_display_aspect(
@@ -1712,11 +1735,16 @@ static void reset_mod_owned_presentation(void) {
     g_ws_adaptive_view = false;
     g_ws_adaptive_max_num = 16;
     g_ws_adaptive_max_den = 9;
+    gpu_ws_set_auto_ui_proportional(g_ws_auto_ui_proportional_cfg ? 1 : 0);
     psx_mod_set_world_scene_predicate(nullptr);
     gpu_ws_set_native_scene_predicate(nullptr);
     psx_mod_set_retained_scene_predicate(nullptr);
     psx_mod_set_adaptive_backdrop_preload(0);
     (void)psx_mod_set_draw_distance_clamp(0);
+    /* [timing] guest_cycle_scale mod gate: shut until this session's
+     * activation opens it (an online match clears the plan, so a mod-gated
+     * scale never carries into netplay). */
+    psx_mod_set_guest_cycle_scale_gate(0);
     g_bezel_path.clear();
     g_frame_interpolation_blend = g_frame_interpolation_blend_default;
     g_frame_interpolation_source = PSX_MOD_FRAME_SOURCE_VBLANK;
@@ -3440,14 +3468,28 @@ static void refresh_host_display_cadence(int force_log, int force_probe) {
     }
     g_host_refresh_last_probe_ms = now_ms ? now_ms : 1ull;
 
-    double host_hz = 0.0;
+    double host_hz = 0.0, max_hz = 0.0;
     if (disp_idx >= 0) {
         SDL_DisplayMode dm;
         if (SDL_GetCurrentDisplayMode(disp_idx, &dm) == 0 &&
             dm.refresh_rate > 0) {
             host_hz = (double)dm.refresh_rate;
+            /* The panel's maximum refresh at this size (VRR targets it). */
+            max_hz = psx_sdl_display_max_refresh(disp_idx);
         }
     }
+    /* Simulated displays (headless tests): PSX_HOST_REFRESH_HZ and
+     * PSX_HOST_REFRESH_MAX_HZ override what SDL reports. */
+    if (const char* e = std::getenv("PSX_HOST_REFRESH_HZ")) {
+        const double v = std::atof(e);
+        if (v > 0.0) host_hz = v;
+    }
+    if (const char* e = std::getenv("PSX_HOST_REFRESH_MAX_HZ")) {
+        const double v = std::atof(e);
+        if (v > 0.0) max_hz = v;
+    }
+    if (max_hz < host_hz) max_hz = host_hz;
+    g_host_refresh_max_hz = max_hz;
 
     const int display_changed = (disp_idx != g_host_refresh_display_idx);
     const int refresh_changed =
@@ -3549,7 +3591,7 @@ static int host_driver_vsync_unreliable(void) {
 }
 
 static int present_vsync_owns_cadence(void) {
-    if (g_video_vsync == 0 || g_present_vsync_disabled)
+    if (g_video_vsync == 0 || g_video_vsync == 2 || g_present_vsync_disabled)
         return 0;
     if (host_driver_vsync_unreliable())
         return 0;
@@ -4352,16 +4394,23 @@ static void runtime_perf_section_end(uint64_t start, uint64_t *total) {
  * maintained in production, so this only needs to expose it.
  *
  * Opt-in via PSX_FRAME_REPORT_MS (milliseconds between lines). When unset this
- * is one branch on a cached int per vblank. */
+ * is one branch on a cached int per vblank. Each line also carries the
+ * emulation thread's busy share (the window less its pacer waits and its
+ * waits on the render queue), the render thread's busy share, the dynamic
+ * resolution level and Smooth motion's generated / real presents per second. */
+static uint64_t g_frame_report_wait_ticks = 0;   /* offline pacer waits */
 static void frame_report_tick(uint64_t frames) {
     static int interval_ms = -1;
     static uint64_t first_ticks = 0, last_ticks = 0, last_frames = 0;
+    static uint64_t last_pc = 0, last_wait = 0, last_q_ns = 0, last_busy_ns = 0;
+    static uint64_t last_gen = 0, last_real = 0;
     if (interval_ms < 0) {
         const char *e = std::getenv("PSX_FRAME_REPORT_MS");
         interval_ms = (e && e[0]) ? std::atoi(e) : 0;
         if (interval_ms < 0) interval_ms = 0;
         first_ticks = last_ticks = SDL_GetTicks();
         last_frames = frames;
+        last_pc = SDL_GetPerformanceCounter();
         if (interval_ms)
             std::fprintf(stdout, "psxrecomp: frame report every %d ms\n", interval_ms);
     }
@@ -4370,15 +4419,40 @@ static void frame_report_tick(uint64_t frames) {
     if (now - last_ticks < (uint64_t)interval_ms) return;
     const double win_s = (double)(now - last_ticks) / 1000.0;
     const double all_s = (double)(now - first_ticks) / 1000.0;
+    const uint64_t pc = SDL_GetPerformanceCounter();
+    const double pc_s = (double)(pc - last_pc) / (double)SDL_GetPerformanceFrequency();
+    RtStats rs;
+    rt_get_stats(&rs);
+    const uint64_t q_ns = rs.backpressure_ns + rs.ring_full_ns + rs.acquire_ns;
+    const double wait_s = (double)(g_frame_report_wait_ticks - last_wait) /
+                              (double)SDL_GetPerformanceFrequency() +
+                          (double)(q_ns - last_q_ns) * 1e-9;
+    const double emu_busy = pc_s > 0.0 ? 100.0 * (1.0 - wait_s / pc_s) : 0.0;
+    const double rt_busy = (pc_s > 0.0 && rs.running)
+        ? 100.0 * (double)(rs.render_busy_ns - last_busy_ns) * 1e-9 / pc_s : 0.0;
+    uint64_t gen = 0, real = 0;
+    gl_renderer_frame_gen_counts(&gen, &real);
+    GlDynresStats ds;
+    gl_renderer_dynres_stats(&ds);
     std::fprintf(stdout,
-                 "psxrecomp: frames=%llu elapsed_ms=%llu fps=%.1f avg_fps=%.1f\n",
+                 "psxrecomp: frames=%llu elapsed_ms=%llu fps=%.1f avg_fps=%.1f "
+                 "emu_busy=%.1f%% render_busy=%.1f%% dynres=%d load=%.2f gen_fps=%.1f real_fps=%.1f\n",
                  (unsigned long long)frames,
                  (unsigned long long)(now - first_ticks),
                  win_s > 0.0 ? (double)(frames - last_frames) / win_s : 0.0,
-                 all_s > 0.0 ? (double)frames / all_s : 0.0);
+                 all_s > 0.0 ? (double)frames / all_s : 0.0,
+                 emu_busy, rt_busy, ds.level, g_dynres.rt.last_load,
+                 pc_s > 0.0 ? (double)(gen - last_gen) / pc_s : 0.0,
+                 pc_s > 0.0 ? (double)(real - last_real) / pc_s : 0.0);
     std::fflush(stdout);
     last_ticks = now;
     last_frames = frames;
+    last_pc = pc;
+    last_wait = g_frame_report_wait_ticks;
+    last_q_ns = q_ns;
+    last_busy_ns = rs.render_busy_ns;
+    last_gen = gen;
+    last_real = real;
 }
 
 static void runtime_perf_diag_tick() {
@@ -6878,6 +6952,27 @@ static PadExtHooks pad_ext_main_hooks(void) {
     return h;
 }
 
+/* TCP port-2 injection (set_input/press "port":2): a digital pad plugged
+ * into port 2 for as long as a test drives it, so headless runs can reach and
+ * play two-player modes. Applied after the normal sampling so it wins. */
+static void apply_input_override_port2(int override_word) {
+    static int s_was_driven;
+    if (override_word < 0) {
+        /* Ending an injection releases its buttons: with no device in the
+         * port, nothing else would write the word again. A real device in
+         * port 2 is resampled each frame anyway. */
+        if (s_was_driven) sio_set_pad_state_slot(1, 0xFFFFu);
+        s_was_driven = 0;
+        return;
+    }
+    s_was_driven = 1;
+    if (!sio_get_pad_connected(1)) {
+        sio_set_pad_connected(1, 1);
+        sio_set_pad_analog(1, 0, 0x80, 0x80, 0x80, 0x80);
+    }
+    sio_set_pad_state_slot(1, (uint16_t)override_word);
+}
+
 static void sample_pad_into_sio(int override) {
     /* Selfcheck fighter mash owns P1 when enabled (headless-safe). */
     if (override < 0) {
@@ -6915,6 +7010,29 @@ static void sample_pad_into_sio(int override) {
             psx_start_bisect_log("offline", consumer_sim, sdl, cap, cap, sio, 1,
                                  0, 0);
         }
+    }
+}
+
+/* Measurement aid, release builds included: PSX_HOLD_PADS="p1[,p2]" holds
+ * those raw pad words (active low, e.g. 0xBFFF = Cross) on ports 1 and 2
+ * after every live sample, so a headless timing run can drive a race
+ * without the debug server. Unset: one cached branch per sample. */
+static void env_pad_hold_apply(void) {
+    static int parsed = 0, n = 0;
+    static uint16_t w[2] = {0xFFFFu, 0xFFFFu};
+    if (!parsed) {
+        parsed = 1;
+        if (const char *e = std::getenv("PSX_HOLD_PADS")) {
+            unsigned a = 0xFFFFu, b = 0xFFFFu;
+            n = std::sscanf(e, "%x,%x", &a, &b);
+            if (n < 0) n = 0;
+            w[0] = (uint16_t)a; w[1] = (uint16_t)b;
+            if (n) std::fprintf(stdout, "psxrecomp: PSX_HOLD_PADS %d port(s)\n", n);
+        }
+    }
+    for (int i = 0; i < n && i < 2; i++) {
+        if (i == 1) sio_set_pad_connected(1, 1);
+        sio_set_pad_state_slot(i, w[i]);
     }
 }
 
@@ -7925,6 +8043,10 @@ static void headless_present_image_ring_capture(void) {
 #endif
 // Shared by early and post-pacer sampling: do not PumpEvents without draining
 // ordered motion/control events and the existing hotkeys before folding binds.
+#ifndef PSX_NO_DEBUG_TOOLS
+static int debug_toggles_on(void);
+static int debug_toggle_key(int key, char *out, int cap);
+#endif
 static bool drain_host_events() {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
@@ -7968,6 +8090,12 @@ static bool drain_host_events() {
                 netplay_soft_exit("netplay_escape");
                 return false;
             }
+#ifndef PSX_NO_DEBUG_TOOLS
+            /* Debug-tools builds: live rendering A/B keys 0-9 (consumed). */
+            if (!key_repeat && !(mod & (KMOD_CTRL | KMOD_ALT | KMOD_GUI)) &&
+                debug_toggles_on() && debug_toggle_key((int)key, nullptr, 0))
+                continue;
+#endif
             if (!key_repeat &&
                 host_keymap_match_event(HOST_KEYMAP_REWIND, (int)key,
                                         (int)scancode, (int)mod)) {
@@ -8098,12 +8226,14 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
 
     /* Check debug server input override. */
     int override = debug_server_get_input_override();
+    int override_p2 = debug_server_get_input_override_port2();
 #else
     /* Production: skip debug server. Still need to advance frame counter
      * locally so anything else that reads it continues to work. */
     extern uint64_t s_frame_count;
     s_frame_count++;
     int override = -1;
+    int override_p2 = -1;
 #endif
 
     psx_local_mouse_begin(sdl_window, local_mouse_live(override));
@@ -8299,6 +8429,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                 sample_headless_pad_into_sio(override);
             else
                 sample_pad_into_sio(override);
+            apply_input_override_port2(override_p2);
+            env_pad_hold_apply();
         }
         /* Offline vblank boundary: record/replay/compare (PSX_RB_SELFCHECK).
          * Defer opening a window while multitap arming is still pending —
@@ -8603,9 +8735,11 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     if (!psx_netplay_active() && !psx_selfcheck_resim_active()) {
         uint64_t perf_start = runtime_perf_section_begin();
         if (!manual_turbo_active && !turbo_load_paced && present_should_wall_pace()) {
-            const uint64_t dyn_t0 = g_dynres.active ? SDL_GetPerformanceCounter() : 0;
+            const uint64_t dyn_t0 = SDL_GetPerformanceCounter();
             frame_pacer_wait(&s_frame_pacer, g_frame_period_ms);
-            if (dyn_t0) g_dynres.pacer_ticks += SDL_GetPerformanceCounter() - dyn_t0;
+            const uint64_t waited = SDL_GetPerformanceCounter() - dyn_t0;
+            if (g_dynres.active) g_dynres.pacer_ticks += waited;
+            g_frame_report_wait_ticks += waited;
         }
         runtime_perf_section_end(perf_start, &g_runtime_perf.pacer_ticks);
         latency_ring_mark(LAT_PACED);
@@ -8629,6 +8763,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                 SDL_PumpEvents(); // retain native timing when no policy exists
             }
             sample_pad_into_sio(override);
+            apply_input_override_port2(override_p2);
+            env_pad_hold_apply();
             latency_ring_restamp_input();
         }
     }
@@ -9236,21 +9372,23 @@ static void render_thread_vblank(void) {
             std::fprintf(stdout, "psxrecomp: render thread on (OpenGL, %d frame(s) in flight)\n",
                          g_render_thread_frames);
             if (g_frame_generation) {
+                gl_renderer_set_frame_generation_method(g_frame_generation_method);
                 gl_renderer_set_frame_generation(1);
                 std::fprintf(stdout, "psxrecomp: Smooth motion (frame generation) on (render thread, "
                              "from surplus only)\n");
             }
         } else {
             std::fprintf(stdout, "psxrecomp: render thread requested but not started "
-                         "(needs the OpenGL backend without HD textures/dumping, netplay, frame "
-                         "interpolation or a 24-bit display)\n");
+                         "(needs the OpenGL backend without netplay, frame interpolation "
+                         "or a 24-bit display)\n");
             if (g_frame_generation)
                 std::fprintf(stdout, "psxrecomp: Smooth motion (frame generation) needs the render thread; off\n");
         }
         std::fflush(stdout);
     }
     if (g_frame_generation)
-        gl_renderer_frame_gen_configure(g_host_refresh_hz,
+        gl_renderer_frame_gen_configure(g_video_vsync == 2 && g_host_refresh_max_hz > 0.0
+                                            ? g_host_refresh_max_hz : g_host_refresh_hz,
                                         g_guest_frame_period_ms > 0.0
                                             ? 1000.0 / g_guest_frame_period_ms : 0.0);
     gl_renderer_render_thread_frame_boundary();
@@ -9291,9 +9429,15 @@ static void dynres_setup(void) {
                          "dual raster)\n");
         return;
     }
-    int floor_s = psx_resolve_internal_scale(dynres_min_value(), g_video_ref_lines,
-                                             psx_sdl_display_pixel_height(nullptr),
-                                             ceiling);
+    /* Floor "display": the output's own lines, i.e. the selected internal
+     * resolution without the supersample factor (Match display = the
+     * monitor's pixel height). Dynamic resolution then only gives back
+     * supersampling and never renders below the output. */
+    int floor_s = psx_dynres_floor_scale(dynres_min_value(),
+                                         effective_internal_resolution(),
+                                         g_video_ref_lines,
+                                         psx_sdl_display_pixel_height(nullptr),
+                                         ceiling);
     if (floor_s > ceiling) floor_s = ceiling;
     DynresParams params;
     dynres_default_params(&params);
@@ -9321,6 +9465,157 @@ static void dynres_setup(void) {
                  g_dynres.active ? "on" : "inert (floor = ceiling)", floor_s, ceiling,
                  floor_s * g_video_ref_lines, ceiling * g_video_ref_lines);
 }
+
+#ifndef PSX_NO_DEBUG_TOOLS
+/* ---- Live rendering A/B keys (debug-tools builds) --------------------------
+ * PSX_DEBUG_TOGGLES=0 turns them off. Each key flips one rendering feature
+ * while the game runs and shows the new state on the OSD:
+ *   1 internal scale 1x -> 2x -> 4x -> Match display (ceiling) -> 1x
+ *   2 dynamic resolution controller   3 widescreen 16:9 native-wide / 4:3
+ *   4 frame generation (needs the render thread)
+ *   5 texture filter nearest -> bilinear -> stable world
+ *   6 native-wide full mirror / centre splice (wide_fast)
+ *   7 geometry correction (sub-pixel vertices)
+ *   8 perspective-correct texturing   0 summary
+ *   9 PGXP depth buffer   F10 PGXP perspective-correct colour
+ *   F11 PGXP seam expansion off -> fine -> wide   F12 PGXP CPU mode */
+extern "C" void pgxp_set_cpu_mode(int enabled);
+extern "C" int  pgxp_cpu_mode(void);
+extern "C" void gte_geometry_correction_set(int enabled);
+extern "C" int  gte_geometry_correction_enabled(void);
+extern "C" void gpu_texture_correction_set(int enabled);
+extern "C" int  gpu_texture_correction_enabled(void);
+extern "C" int  gl_renderer_get_wide_fast(void);
+static int debug_toggles_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = std::getenv("PSX_DEBUG_TOGGLES"); on = !(e && e[0] == '0'); }
+    return on;
+}
+static int s_dbg_scale_target = 0;
+static const char *dbg_texfilter_name(int f) {
+    return f == 1 ? "bilinear" : f == 2 ? "stable world" : "nearest";
+}
+static void debug_toggle_summary(char *buf, size_t cap) {
+    GlDynresStats st; gl_renderer_dynres_stats(&st);
+    static const char *seam_names[3] = {"off", "fine", "wide"};
+    std::snprintf(buf, cap, "scale %dx/%dx dynres %s ws %d:%d%s fg %s tex %s mirror %s geom %s persp %s"
+                  " | depth %s colour %s seam %s cpu %s",
+                  st.level, st.ceiling, g_dynres.active ? "on" : "off",
+                  g_video_aspect_num, g_video_aspect_den,
+                  g_ws_native_wide ? " nw" : " squash",
+                  gl_renderer_frame_generation() ? (g_render_thread ? "on" : "on(inert:no render thread)") : "off",
+                  dbg_texfilter_name(gr_texture_filter()),
+                  gl_renderer_get_wide_fast() ? "splice" : "full",
+                  gte_geometry_correction_enabled() ? "on" : "off",
+                  gpu_texture_correction_enabled() ? "on" : "off",
+                  gl_renderer_get_pgxp_depth() ? "on" : "off",
+                  gl_renderer_get_pgxp_color_perspective() ? "on" : "off",
+                  seam_names[gl_renderer_get_pgxp_seam()],
+                  pgxp_cpu_mode() ? "on" : "off");
+}
+static int debug_toggle_key(int key, char *out, int cap) {
+    char msg[256];
+    switch (key) {
+    case SDLK_1: {
+        GlDynresStats st; gl_renderer_dynres_stats(&st);
+        if (st.ceiling < 2) { std::snprintf(msg, sizeof msg, "Scale: fixed at %dx (no live steps)", st.level); break; }
+        const int cur = s_dbg_scale_target ? s_dbg_scale_target : st.level;
+        int next = cur < 2 ? 2 : cur < 4 ? 4 : cur < st.ceiling ? st.ceiling : 1;
+        if (next > st.ceiling) next = st.ceiling;
+        if (g_dynres.active) g_dynres.active = false;   /* manual scale wins */
+        s_dbg_scale_target = next;
+        (void)gl_renderer_request_internal_scale(next);
+        std::snprintf(msg, sizeof msg, "Scale: %dx%s (dynres off)", next,
+                      next == st.ceiling ? " = Match display" : next == 1 ? " Native" : "");
+        break; }
+    case SDLK_2:
+        if (g_dynres.active) g_dynres.active = false;
+        else { dynres_setup(); if (!g_dynres.active && gl_renderer_dynamic_resolution_ceiling() >= 2) g_dynres.active = true; }
+        s_dbg_scale_target = 0;
+        std::snprintf(msg, sizeof msg, "Dynamic resolution: %s", g_dynres.active ? "on" : "off");
+        break;
+    case SDLK_3: {
+        const bool wide = g_video_aspect_num * 3 != g_video_aspect_den * 4;
+        if (!wide) psx_ws_set_native_wide(1);
+        const int ok = wide ? psx_debug_display_aspect(4, 3, 0) : psx_debug_display_aspect(16, 9, 0);
+        std::snprintf(msg, sizeof msg, "Widescreen: %s%s", wide ? "off (4:3)" : "16:9 native-wide (engine only)",
+                      ok ? "" : " [refused]");
+        break; }
+    case SDLK_4: {
+        const int on = !gl_renderer_frame_generation();
+        g_frame_generation = on;
+        gl_renderer_set_frame_generation(on);
+        std::snprintf(msg, sizeof msg, "Frame generation: %s%s", on ? "on" : "off",
+                      on && !g_render_thread ? " (inert: render thread off)" : "");
+        break; }
+    case SDLK_5: {
+        const int f = (gr_texture_filter() + 1) % 3;
+        gr_set_texture_filter(f);
+        std::snprintf(msg, sizeof msg, "Texture filter: %s", dbg_texfilter_name(f));
+        break; }
+    case SDLK_6: {
+        const int fast = !gl_renderer_get_wide_fast();
+        gl_renderer_set_wide_fast(fast);
+        std::snprintf(msg, sizeof msg, "Native-wide mirror: %s", fast ? "centre splice (fast)" : "full mirror");
+        break; }
+    case SDLK_7: {
+        const int on = !gte_geometry_correction_enabled();
+        gte_geometry_correction_set(on);
+        std::snprintf(msg, sizeof msg, "Geometry correction (sub-pixel): %s", on ? "on" : "off");
+        break; }
+    case SDLK_8: {
+        const int on = !gpu_texture_correction_enabled();
+        gpu_texture_correction_set(on);
+        std::snprintf(msg, sizeof msg, "Perspective texturing: %s", on ? "on" : "off");
+        break; }
+    case SDLK_9: {
+        const int on = !gl_renderer_get_pgxp_depth();
+        gl_renderer_set_pgxp_depth(on);
+        std::snprintf(msg, sizeof msg, "PGXP depth buffer: %s", on ? "on" : "off");
+        break; }
+    case SDLK_F10: {
+        const int on = !gl_renderer_get_pgxp_color_perspective();
+        gl_renderer_set_pgxp_color_perspective(on);
+        std::snprintf(msg, sizeof msg, "PGXP perspective colour: %s", on ? "on" : "off");
+        break; }
+    case SDLK_F11: {
+        const int m = (gl_renderer_get_pgxp_seam() + 1) % 3;
+        gl_renderer_set_pgxp_seam(m);
+        std::snprintf(msg, sizeof msg, "PGXP seam expansion: %s",
+                      m == 0 ? "off" : m == 1 ? "fine (1 output px)" : "wide (0.5 native px)");
+        break; }
+    case SDLK_F12: {
+        const int on = !pgxp_cpu_mode();
+        pgxp_set_cpu_mode(on);
+        std::snprintf(msg, sizeof msg, "PGXP CPU mode: %s", on ? "on" : "off");
+        break; }
+    case SDLK_0:
+        debug_toggle_summary(msg, sizeof msg);
+        break;
+    default:
+        return 0;
+    }
+    host_osd_push(msg, key == SDLK_0 ? 5000 : 2500);
+    std::fprintf(stdout, "psxrecomp: toggle %s: %s\n", SDL_GetKeyName((SDL_Keycode)key), msg);
+    std::fflush(stdout);
+    if (out && cap > 0) std::snprintf(out, (size_t)cap, "%s", msg);
+    return 1;
+}
+/* Debug server: simulate a toggle key ({"cmd":"debug_key","key":"1"}). */
+extern "C" int psx_debug_toggle_key(int ch, char *out, int cap) {
+    if (ch >= 'b' && ch <= 'd')   /* F10..F12 */
+        return debug_toggle_key((int)(SDLK_F10 + (ch - 'b')), out, cap);
+    if (ch < '0' || ch > '9') return 0;
+    return debug_toggle_key((int)(SDLK_0 + (ch - '0')), out, cap);
+}
+#else
+/* Release: the keys are compiled out; debug_server.c's debug_key still links. */
+extern "C" int psx_debug_toggle_key(int ch, char *out, int cap) {
+    (void)ch;
+    if (out && cap > 0) std::snprintf(out, (size_t)cap, "unavailable (debug tools not built)");
+    return 0;
+}
+#endif
 
 static void dynres_apply_level(int level) {
     GlDynresStats st;
@@ -9365,16 +9660,41 @@ static void dynres_tick_rt(double now_s, double wall, double period, int held,
     g_dynres.rt_acc_gpu_frames += co.gpu_frames - c0.gpu_frames;
     g_dynres.last_costs = co;
     g_dynres.last_bp_ns = bp_ns;
-    DynrtSample smp{ period, wall, frames, cost, bp, held };
+    /* Smooth motion: the in-between frames it actually drew, at their
+     * measured cost (timed ones' mean, applied to every one drawn), are
+     * render work like the real frames'. Counted into the load instead of a
+     * reserve that assumed a full panel rate of them at an estimated cost:
+     * with room, dynamic resolution sees the room and steps up; when they
+     * crowd the real frames, the load says so. A sample whose real costs have
+     * not arrived carries its share forward to the next one that has. */
+    {
+        uint64_t gen = 0, meas = 0, gcost = 0;
+        gl_renderer_frame_gen_costs(&gen, &meas, &gcost);
+        if (meas > g_dynres.last_gen_meas)
+            g_dynres.gen_mean_s = (double)(gcost - g_dynres.last_gen_cost_ns) * 1e-9 /
+                                  (double)(meas - g_dynres.last_gen_meas);
+        if (gen >= g_dynres.last_gen)
+            g_dynres.gen_pending_s += (double)(gen - g_dynres.last_gen) * g_dynres.gen_mean_s;
+        g_dynres.last_gen = gen;
+        g_dynres.last_gen_meas = meas;
+        g_dynres.last_gen_cost_ns = gcost;
+    }
+    double gen_s = 0.0;
+    if (frames > 0 && !held) { gen_s = g_dynres.gen_pending_s; g_dynres.gen_pending_s = 0.0; }
+    if (held) g_dynres.gen_pending_s = 0.0;
+    DynrtSample smp{ period, wall, frames, cost + gen_s, bp, held, gen_s };
     const int prev_level = c.level;
     const int level = dynrt_sample(&c, now_s, &smp);
     /* Frame generation only spends surplus: not while the real frames are
-     * over budget (renewed every over-budget sample) and briefly after a
-     * step down, while the new level's first frames settle. */
+     * over budget on their own (renewed every over-budget sample; the
+     * in-between frames' part of the last window's load does not count, or
+     * they would switch themselves off) and briefly after a step down, while
+     * the new level's first frames settle. */
     if (level < prev_level)
-        gl_renderer_frame_gen_hold("dynres stepped down", 0.25);
-    else if (c.over_streak > 0)
-        gl_renderer_frame_gen_hold("dynres over budget", 0.1);
+        gl_renderer_frame_gen_hold(GL_FG_HOLD_STEP_DOWN, 0.25);
+    else if (c.over_streak > 0 &&
+             c.last_real_load >= 1.0 - c.p.margin)
+        gl_renderer_frame_gen_hold(GL_FG_HOLD_OVER_BUDGET, 0.1);
     if (c.windows != g_dynres.rt_last_windows) {
         g_dynres.rt_last_windows = c.windows;
         g_dynres.rt_win_cpu_ms = g_dynres.rt_acc_frames
@@ -15268,6 +15588,19 @@ namespace {
 }  // namespace
 #endif
 
+/* [timing] guest_cycle_scale_gate reader: main RAM only, side-effect free
+ * (aligned little-endian word of the given size). */
+extern "C" uint8_t* memory_get_ram_ptr(void);
+static uint32_t gcs_gate_read_ram(uint32_t phys, uint32_t size) {
+    const uint8_t* ram = (const uint8_t*)memory_get_ram_ptr();
+    const uint32_t bytes = (uint32_t)memory_get_ram_bytes();
+    if (!ram || !bytes) return 0;
+    const uint32_t a = phys & (bytes - 1u);
+    uint32_t v = 0;
+    for (uint32_t i = 0; i < size; ++i) v |= (uint32_t)ram[a + i] << (8u * i);
+    return v;
+}
+
 int main(int argc, char** argv) {
     /* Force line-buffered output so messages appear even if killed. */
     std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
@@ -15545,6 +15878,7 @@ int main(int argc, char** argv) {
     bool vulkan_offered = false; /* game.toml [video] offer_vulkan; developer opt-in for launcher visibility */
     /* Legacy single deadzone (<0 => keep per-slot / input.ini defaults). */
     int  resolved_deadzone = -1;
+    int  resolved_audio_buffer_ms = 180;
     /* Localization: the effective language (game.toml default -> settings.toml ->
      * launcher choice), applied to the translation layer AFTER the launcher runs.
      * lang_menu_options drives the launcher's "Localization" dropdown (empty =>
@@ -15607,6 +15941,7 @@ int main(int argc, char** argv) {
             apply_offline_pad_count(game_players, multitap_enabled);
             game_has_disc_crc = gc.has_disc_crc;
             game_disc_crc     = gc.disc_crc;
+            resolved_audio_buffer_ms = gc.runtime.audio_buffer_ms;
             g_netplay_disc_expect.require_cue = gc.netplay_require_cue;
             g_netplay_disc_expect.required_tracks = gc.netplay_required_tracks;
             g_netplay_disc_expect.has_required_leadout =
@@ -15718,6 +16053,8 @@ int main(int argc, char** argv) {
                 g_video_win_w = gc.runtime.video_window_width;
             }
             g_video_aa         = gc.runtime.video_antialiasing;
+            g_video_post_aa    = gc.runtime.video_antialiasing_mode;
+            g_video_ss_milli   = gc.runtime.video_supersample_milli;
             g_video_texfilter  = gc.runtime.video_texture_filter;
             g_video_fmv_filter = gc.runtime.video_fmv_filter;
             g_video_geometry_correction   =
@@ -15731,6 +16068,10 @@ int main(int argc, char** argv) {
             g_video_pgxp_preserve_projection =
                 gc.runtime.video_pgxp_preserve_projection ? 1 : 0;
             g_video_pgxp_mod_only = gc.runtime.video_pgxp_mod_only ? 1 : 0;
+            g_video_pgxp_depth_buffer = gc.runtime.video_pgxp_depth_buffer ? 1 : 0;
+            g_video_pgxp_color_correction = gc.runtime.video_pgxp_color_correction ? 1 : 0;
+            g_video_pgxp_seam = gc.runtime.video_pgxp_seam;
+            g_video_pgxp_depth_threshold = (float)gc.runtime.video_pgxp_depth_threshold;
             g_video_renderer   = gc.runtime.video_renderer;
             g_video_screen     = gc.runtime.video_screen_kind;
             g_video_scanlines  = gc.runtime.video_scanlines;
@@ -15744,6 +16085,27 @@ int main(int argc, char** argv) {
                 gc.runtime.video_texture_window_batching ? 1 : 0);
             g_render_thread = gc.runtime.video_render_thread ? 1 : 0;
             g_frame_generation = gc.runtime.video_frame_generation ? 1 : 0;
+            g_frame_generation_method = gc.runtime.video_frame_generation_method;
+            /* [timing] guest_cycle_scale is a title constant from game.toml
+             * (no player setting). PSX_GUEST_CYCLE_SCALE overrides it for
+             * testing only. */
+            psx_guest_cycle_scale_set_gated(gc.runtime.guest_cycle_scale_gated ? 1 : 0);
+            psx_guest_cycle_scale_ram_gate_clear();
+            psx_guest_cycle_scale_set_ram_reader(gcs_gate_read_ram);
+            for (const auto& gp : gc.runtime.guest_cycle_scale_gate)
+                (void)psx_guest_cycle_scale_ram_gate_add(gp.addr, gp.size, gp.mask, gp.value);
+            psx_guest_cycle_scale_set((uint32_t)gc.runtime.guest_cycle_scale);
+            if (const char* gcs = getenv("PSX_GUEST_CYCLE_SCALE")) {
+                const int v = atoi(gcs);
+                if (v > 0) psx_guest_cycle_scale_set((uint32_t)v);
+            }
+            if (psx_guest_cycle_scale_config() != 1u)
+                fprintf(stderr, "[timing] guest_cycle_scale %u%s%s (instructions charge 1/%u "
+                        "of their guest cycles; VBlank/timers/CD/SPU/DMA unchanged)\n",
+                        psx_guest_cycle_scale_config(),
+                        gc.runtime.guest_cycle_scale_gate.empty() ? "" : ", RAM gate",
+                        gc.runtime.guest_cycle_scale_gated ? ", mod gate" : "",
+                        psx_guest_cycle_scale_config());
             g_present_thread = gc.runtime.video_present_thread ? 1 : 0;
             g_video_vsync       = gc.runtime.video_vsync;
             g_frame_interpolation = gc.runtime.video_frame_interpolation ? 1 : 0;
@@ -15758,6 +16120,8 @@ int main(int argc, char** argv) {
             g_ws_hud_sprt      = gc.ws_hud_sprt_squash;
             gpu_ws_set_auto_ui_squash(gc.ws_auto_ui_squash ? 1 : 0);
             gpu_ws_set_auto_ui_in_place(gc.ws_auto_ui_in_place ? 1 : 0);
+            g_ws_auto_ui_proportional_cfg = gc.ws_auto_ui_proportional;
+            gpu_ws_set_auto_ui_proportional(g_ws_auto_ui_proportional_cfg ? 1 : 0);
             /* [widescreen] full_2d — opt a pure-2D sprite game (MMX6) into the
              * widescreen present path. Applied to the GPU layer up front so the
              * ws engage at game entry classifies every frame as gameplay. */
@@ -17985,15 +18349,31 @@ session_reboot:
         else std::fprintf(stdout, "psxrecomp: PSX_INTERNAL_RESOLUTION=%s not understood "
                           "(native, 720p, 1080p, 1440p, 4k, 5k, 8k, display, or lines)\n", e);
     }
+    /* PSX_SUPERSAMPLE (1.0..4.0) and PSX_AA_MODE (off, fxaa, fxaa_hq): one-run
+     * overrides of [video] supersample / antialiasing_mode. */
+    if (const char* e = std::getenv("PSX_SUPERSAMPLE")) {
+        const int m = psx_ss_parse_milli(e);
+        if (m) g_video_ss_milli = m;
+        else std::fprintf(stdout, "psxrecomp: PSX_SUPERSAMPLE=%s not understood (1.0..4.0)\n", e);
+    }
+    if (const char* e = std::getenv("PSX_AA_MODE")) {
+        if (!std::strcmp(e, "off")) g_video_post_aa = GL_POST_AA_OFF;
+        else if (!std::strcmp(e, "fxaa")) g_video_post_aa = GL_POST_AA_FXAA;
+        else if (!std::strcmp(e, "fxaa_hq")) g_video_post_aa = GL_POST_AA_FXAA_HQ;
+        else std::fprintf(stdout, "psxrecomp: PSX_AA_MODE=%s not understood (off, fxaa, fxaa_hq)\n", e);
+    }
+    if (g_video_ss_milli != 1000)
+        std::fprintf(stdout, "psxrecomp: supersample %.3gx on the internal-resolution target\n",
+                     g_video_ss_milli / 1000.0);
     apply_internal_resolution(psx_sdl_display_pixel_height(nullptr));
     if (g_video_scale < 1) g_video_scale = 1;
     if (const char* e = std::getenv("PSX_DYNRES"))
         g_video_dynres_env = (*e && *e != '0') ? 1 : 0;
     if (const char* e = std::getenv("PSX_DYNRES_MIN")) {
         int v = 0;
-        if (psx_ir_parse(e, &v) && v != PSX_IR_DISPLAY) g_video_dynres_min_env = v;
+        if (psx_ir_parse(e, &v)) g_video_dynres_min_env = v;
         else std::fprintf(stdout, "psxrecomp: PSX_DYNRES_MIN=%s not understood "
-                          "(native, 720p, 1080p, 1440p, 4k, 5k, 8k, or lines)\n", e);
+                          "(native, 720p, 1080p, 1440p, 4k, 5k, 8k, display, or lines)\n", e);
     }
     {
         /* Per-backend ceiling. OpenGL allocates its hr surface at context init
@@ -18070,6 +18450,15 @@ session_reboot:
     if (pgxp_in.env_geometry >= 0) g_video_geometry_correction = pgxp_in.env_geometry;
     if (pgxp_in.env_texture >= 0) g_video_perspective_texturing = pgxp_in.env_texture;
     if (pgxp_in.env_cpu_mode >= 0) g_video_pgxp_cpu_mode = pgxp_in.env_cpu_mode;
+    /* PGXP renderer features (G1.14): [video] keys, env overrides. */
+    if (const char* e = std::getenv("PSX_PGXP_DEPTH")) g_video_pgxp_depth_buffer = (*e && *e != '0');
+    if (const char* e = std::getenv("PSX_PGXP_COLOR")) g_video_pgxp_color_correction = (*e && *e != '0');
+    if (const char* e = std::getenv("PSX_PGXP_SEAM")) g_video_pgxp_seam = std::atoi(e);
+    gl_renderer_set_pgxp_depth(g_video_pgxp_depth_buffer);
+    gl_renderer_set_pgxp_color_perspective(g_video_pgxp_color_correction);
+    gl_renderer_set_pgxp_seam(g_video_pgxp_seam);
+    if (const char* e = std::getenv("PSX_PGXP_DEPTH_THRESHOLD")) g_video_pgxp_depth_threshold = (float)std::atof(e);
+    gl_renderer_set_pgxp_depth_threshold(g_video_pgxp_depth_threshold);
     /* [video] texture_window_batching A/B (same image, fewer GL draws). */
     if (const char* e = std::getenv("PSX_GL_TEXWIN_BATCH"))
         gl_renderer_set_texture_window_batching((*e && *e != '0') ? 1 : 0);
@@ -18086,6 +18475,14 @@ session_reboot:
         g_present_thread_slots = std::atoi(e) > 0 ? std::atoi(e) : 3;
     if (const char* e = std::getenv("PSX_FRAME_GEN"))
         g_frame_generation = (*e && *e != '0') ? 1 : 0;
+    /* PSX_FRAME_GEN_METHOD=redraw|reprojection overrides [video]
+     * frame_generation_method for one run. */
+    if (const char* e = std::getenv("PSX_FRAME_GEN_METHOD")) {
+        if (!std::strcmp(e, "reprojection")) g_frame_generation_method = GL_FG_METHOD_REPROJECTION;
+        else if (!std::strcmp(e, "redraw")) g_frame_generation_method = GL_FG_METHOD_REDRAW;
+        else if (*e) std::fprintf(stderr, "psxrecomp: PSX_FRAME_GEN_METHOD=%s ignored "
+                                  "(redraw|reprojection)\n", e);
+    }
     if (const char* e = std::getenv("PSX_RENDER_THREAD_FRAMES"))
         g_render_thread_frames = std::atoi(e) > 0 ? std::atoi(e) : 2;
     /* Scanlines: env override wins over config, same as the corrections above,
@@ -18331,6 +18728,7 @@ session_reboot:
         std::atexit(game_options_save_now);
 #ifndef PSX_NO_DEBUG_TOOLS
         debug_server_init(debug_port);
+        host_sampler_start();   /* this is the emulation thread */
 #else
         (void)debug_port;
 #endif
@@ -18381,6 +18779,7 @@ session_reboot:
             return 1;
         }
         gl_renderer_set_swap_interval(0);
+        (void)gl_renderer_set_post_aa(g_video_post_aa);
         g_gl_active = gl_renderer_init_context(s_headless_gl_window) != 0;
         if (!g_gl_active || gr_backend() != GR_BACKEND_OPENGL ||
             !(SDL_GetWindowFlags(s_headless_gl_window) & SDL_WINDOW_HIDDEN)) {
@@ -18481,6 +18880,7 @@ session_reboot:
                 cfg.channels    = 2;
                 cfg.source_rate = 44100.0;            /* SPU render rate */
                 cfg.host_rate   = (double)have.freq;  /* actual device rate */
+                cfg.target_ms   = (double)resolved_audio_buffer_ms;
                 if (rab_init(&s_drc, &cfg) == 0) s_drc_ready = true;
             }
             g_audio_host_rate = have.freq;
@@ -18561,8 +18961,9 @@ session_reboot:
          * surface is allocated at context init below. */
         if (effective_internal_resolution() == PSX_IR_DISPLAY && g_video_scale_applies) {
             const int dh = psx_sdl_display_pixel_height(sdl_window);
-            const int s = psx_resolve_internal_scale(PSX_IR_DISPLAY, g_video_ref_lines,
-                                                     dh, GL_MAX_INTERNAL_SCALE);
+            const int s = psx_resolve_internal_scale_ss(PSX_IR_DISPLAY, g_video_ref_lines,
+                                                        dh, GL_MAX_INTERNAL_SCALE,
+                                                        g_video_ss_milli);
             gr_set_scale(s);
             g_video_requested_scale = s;
             std::fprintf(stdout, "psxrecomp: internal resolution Match display: "
@@ -18571,10 +18972,35 @@ session_reboot:
         gl_renderer_set_swap_interval(present_effective_swap_interval()); /* applied at context init */
         /* Dynamic resolution: the surfaces are allocated at the scale above
          * (the ceiling) and the level steps under it (dynres_setup). */
+#ifndef PSX_NO_DEBUG_TOOLS
+        /* Live A/B keys: allocate the surfaces at the Match display scale
+         * (the ceiling) so key 1 can step the internal scale at run time,
+         * then start at the configured scale with the controller off. */
+        const bool dbg_live_scale = debug_toggles_on() && g_video_scale_applies;
+        const int dbg_start_scale = g_video_requested_scale > 0 ? g_video_requested_scale : 1;
+        if (dbg_live_scale) {
+            const int ds = psx_resolve_internal_scale(
+                PSX_IR_DISPLAY, g_video_ref_lines,
+                psx_sdl_display_pixel_height(sdl_window), GL_MAX_INTERNAL_SCALE);
+            if (ds > dbg_start_scale) gr_set_scale(ds);
+        }
+#else
+        const bool dbg_live_scale = false;
+        const int dbg_start_scale = 1;
+#endif
         gl_renderer_set_dynamic_resolution(
-            (dynres_requested() && g_video_scale_applies) ? 1 : 0);
+            ((dynres_requested() || dbg_live_scale) && g_video_scale_applies) ? 1 : 0);
+        (void)gl_renderer_set_post_aa(g_video_post_aa);
         g_gl_active = (gl_renderer_init_context(sdl_window) != 0);
         dynres_setup();
+        if (dbg_live_scale && g_gl_active) {
+            if (!dynres_requested()) g_dynres.active = false;
+            const int ceil_s = gl_renderer_dynamic_resolution_ceiling();
+            if (ceil_s >= 2 && !g_dynres.active)
+                (void)gl_renderer_step_internal_scale_now(dbg_start_scale);
+            std::fprintf(stdout, "psxrecomp: debug toggles: surfaces at %dx, "
+                         "starting at %dx (keys 0-9)\n", ceil_s, dbg_start_scale);
+        }
 
         /* Bezel artwork (Mods): load after the GL context exists. */
         if (!g_bezel_path.empty() && g_gl_active) {
@@ -18836,6 +19262,26 @@ session_reboot:
             (net_cfg.transport == 2 || !psx_lobby_match_caps() || !psx_lobby_match_caps()->valid))
             std::snprintf(net_cfg.content_fingerprint, sizeof(net_cfg.content_fingerprint),
                           "%s", PSXRecompV4::mod_runtime_session_plan_fp().c_str());
+        // [timing] guest_cycle_scale changes guest timing, so every peer must
+        // run the same one. It is a title constant, but fold it into the
+        // content gate as a safety net (a peer that differs, e.g. through
+        // the test env override, never matches and the session does not
+        // start). 1 (faithful) leaves the fingerprint, and vanilla sessions,
+        // exactly as before.
+        if (psx_guest_cycle_scale_config() != 1u) {
+            char tag[9];
+            std::snprintf(tag, sizeof tag, "%08x", 0x6C000000u | psx_guest_cycle_scale_config());
+            if (std::strlen(net_cfg.content_fingerprint) != 64)
+                std::snprintf(net_cfg.content_fingerprint, sizeof(net_cfg.content_fingerprint),
+                              "%s", "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00000000");
+            for (int i = 0; i < 8; ++i) {
+                char* d = &net_cfg.content_fingerprint[56 + i];
+                auto hv = [](char c) { return c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10; };
+                *d = "0123456789abcdef"[hv(*d) ^ hv(tag[i])];
+            }
+            std::printf("psxrecomp: netplay requires guest_cycle_scale %u on every peer\n",
+                        psx_guest_cycle_scale_config());
+        }
         const int nrc = psx_netplay_start(&net_cfg);
         if (nrc != 0) {
             const char* const why = netplay_start_failure(nrc, net_cfg);

@@ -176,6 +176,15 @@ void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linea
  * Returns 0 only if a texture could not be created. */
 int  gl_renderer_set_bezel(const void *rgba, int w, int h);
 int  gl_renderer_has_bezel(void);
+/* Post-process anti-aliasing of the composed game image ([video]
+ * antialiasing_mode, PSX_AA_MODE). Off by default; OSD and bezel are not
+ * filtered and guest VRAM is never touched. Takes effect at the next present;
+ * safe to call from any thread. */
+enum { GL_POST_AA_OFF = 0, GL_POST_AA_FXAA = 1, GL_POST_AA_FXAA_HQ = 2 };
+int  gl_renderer_set_post_aa(int mode);
+int  gl_renderer_post_aa(void);
+uint64_t gl_renderer_post_aa_passes(void);
+double gl_renderer_post_aa_gpu_us(void);   /* debug builds, PSX_POST_AA_TIME=N: mean pass time (us), resets */
 
 /* Clear to black + swap (display-disabled frame). */
 void gl_renderer_present_blank(void);
@@ -265,6 +274,22 @@ float gl_renderer_get_post_gamma(void);
 /* Select full native-wide mirror rendering instead of the centre-splice fast
  * path. Textured edge expansion needs the complete mirror surface. */
 void gl_renderer_set_wide_fast(int on);
+/* PGXP renderer features (docs/ENHANCEMENTS.md G1.14), all off by default:
+ * depth buffer for opaque 3D polygons, perspective-correct Gouraud colour,
+ * seam expansion (0 off, 1 = 1 output px above 1x, 2 = 0.5 native px),
+ * and the depth clear threshold in SZ units (DuckStation's default 4096). */
+/* Nonzero when a PGXP renderer feature is on: only then does gpu.c send
+ * gr_set_depth_triangle (no extra command per triangle otherwise). Any thread. */
+int  gl_renderer_pgxp_render_wanted(void);
+void gl_renderer_set_pgxp_depth(int on);
+int  gl_renderer_get_pgxp_depth(void);
+void gl_renderer_set_pgxp_color_perspective(int on);
+int  gl_renderer_get_pgxp_color_perspective(void);
+void gl_renderer_set_pgxp_seam(int mode);
+int  gl_renderer_get_pgxp_seam(void);
+void gl_renderer_set_pgxp_depth_threshold(float sz);
+void gl_renderer_pgxp_render_stats(uint64_t *depth_tris, uint64_t *depth_clears,
+                                   uint64_t *seam_tris);
 
 /* Internal-resolution scale state of the live GL context (0 before init). */
 typedef struct GlScaleInfo {
@@ -342,8 +367,24 @@ void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int3
                            const int32_t x[3], const int32_t y[3]);
 int  gl_renderer_frame_generation(void);
 void gl_renderer_frame_gen_configure(double refresh_hz, double guest_hz);
-void gl_renderer_frame_gen_hold(const char *reason, double secs);
+double gl_renderer_frame_gen_real_share(void);
+/* How in-between frames are made ([video] frame_generation_method,
+ * docs/FRAME_GENERATION.md): redraw (default) or reprojection (opt-in). */
+enum { GL_FG_METHOD_REDRAW = 0, GL_FG_METHOD_REPROJECTION = 1 };
+void gl_renderer_set_frame_generation_method(int method);
+int  gl_renderer_frame_generation_method(void);
+/* Why the real frames want generation paused (dynamic resolution). */
+typedef enum { GL_FG_HOLD_STEP_DOWN = 0, GL_FG_HOLD_OVER_BUDGET = 1 } GlFgHold;
+void gl_renderer_frame_gen_hold(GlFgHold kind, double secs);
 int  gl_renderer_frame_gen_json(char *out, int cap);
+/* Smooth motion's atomically published running totals, for rate readouts. */
+void gl_renderer_frame_gen_counts(uint64_t *generated, uint64_t *real_presents);
+/* Generated frames so far, how many of them were timed, and the timed ones'
+ * summed cost (ns, GPU time or CPU wall, the larger): dynamic resolution
+ * counts what Smooth motion actually spent in its load. The measured count
+ * and summed cost are a coherent pair; generated count advances independently
+ * because GPU measurements may arrive later. This never stalls the GL queue. */
+void gl_renderer_frame_gen_costs(uint64_t *generated, uint64_t *measured, uint64_t *cost_ns);
 /* Host time the renderer spent, as running totals in performance-counter
  * ticks (only kept while dynamic resolution is on): waits for the frame
  * blend's next present, render passes, blend presents' own work, and time
@@ -483,7 +524,7 @@ void gl_renderer_draw_projected_triangle(const PSXProjectedVertex vertices[3],
     int perspective);
 /* Cumulative textured-batch diagnostics: total, then flushes caused by
  * isolation, blend-mode, mask, filter, backdrop-gate, texture-window, capacity. */
-void gl_renderer_batch_diag(uint64_t out[8]);
+void gl_renderer_batch_diag(uint64_t out[9]);
 
 /* Texture-window batching ([video] texture_window_batching; default off).
  * On: textured prims with different GP0(E2h) texture windows share a batch

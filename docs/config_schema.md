@@ -58,6 +58,7 @@ How the two configs relate:
 [recompiler]
 [draw_distance] # optional; opt-in far-geometry clamps (below)
 [runtime]
+[timing]        # optional; title timing constants (below)
 [audit]
 ```
 
@@ -603,6 +604,58 @@ the pixels to show it. Native keeps the window exactly as before.
 downsamples to the window. It accepts 1 to 32 in both `game.toml` and the
 player's `settings.toml`; 1 (the default) is native and unchanged.
 
+### Anti-aliasing (`antialiasing_mode`, `supersample`)
+
+Both are opt-in and change nothing unless set.
+
+```toml
+[video]
+supersample = 1.5               # 1.0..4.0, default 1.0
+antialiasing_mode = "fxaa"      # off (default) | fxaa | fxaa_hq
+```
+
+`supersample` multiplies the target of a line preset or Match display before
+it becomes a scale: Match display on a 1080 px monitor with 2.0 asks for 2160
+lines (S = 9) and the present's area resolve brings it back to 1080, which is
+ordered-grid SSAA of everything, 2D included. Native and the legacy
+`supersampling` factor are left alone. Dynamic resolution takes the result as
+its ceiling and steps under it as before. `PSX_SUPERSAMPLE=<factor>` overrides
+it for one run.
+
+To make supersampling the elastic part only, set the dynamic resolution floor
+to the output: `dynamic_resolution_min = "display"` (also `PSX_DYNRES_MIN=display`
+and settings.toml) means the selected internal resolution *without* the
+supersample factor, i.e. the monitor's own lines under Match display or the
+preset's lines otherwise. Dynamic resolution then steps between the
+supersampled ceiling and the output and never renders below it:
+
+```toml
+[video]
+internal_resolution = "display"
+supersample = 2.0
+dynamic_resolution = true
+dynamic_resolution_min = "display"
+```
+
+`antialiasing_mode` filters the composed game image on OpenGL: after the game
+quad (4:3, native-wide, Smooth motion and generated frames alike) and before
+hold-last capture, the OSD, screenshots and the swap. It reads only output
+pixels, so guest VRAM, readbacks, render passes and the Smooth motion sources
+are untouched; the bezel and OSD stay sharp; 24-bit FMV frames are not
+filtered. The PS1 HUD is part of the same image and is filtered too. `fxaa` is one copy and one full-screen pass (on an M4, at most 0.4 /
+0.7 / 1.5 ms at 1080p / 1440p / 4K, fence-timed with the copy); `fxaa_hq` lowers the contrast threshold and searches further along
+long edges. `PSX_AA_MODE=off|fxaa|fxaa_hq` overrides it for one run and the
+`post_aa` TCP command switches it live. The older boolean `antialiasing` key is
+unrelated: it is the linear present filter the launcher already persists.
+
+Not offered: MSAA. The hi-res surface *is* guest VRAM (texture pages, CLUTs,
+VRAM copies, readbacks and the mask stencil all sample or copy it between
+draws), so a multisampled target would need a resolve before every one of
+those and the mask/semi-transparency rules would have to run per sample; that
+is a renderer redesign, not an option. SMAA needs its area/search lookup
+textures and three passes; on an image that is already area-resolved from a
+higher internal resolution it buys little over FXAA, so it is left for later.
+
 The runtime clamps N per backend:
 
 - Software and Vulkan stop at 4.
@@ -723,6 +776,62 @@ margins remain the historical black clear.
 Reserved future fields:
 - `default_disc_path` — game runtimes can pre-mount a disc
 - `default_game_root` — for sibling-junction setups
+
+## Timing block (`[timing]`)
+
+Title constants. They live in the game's `game.toml`, are never written to
+`settings.toml`, and are not shown in the launcher.
+
+```toml
+[timing]
+guest_cycle_scale = 1           # 1..64; 1 = faithful (default)
+# Optional declarative gate: the scale applies only while every predicate
+# holds, judged at each VBlank edge (one inline table or an array, max 8).
+guest_cycle_scale_gate = [
+  { addr = 0x800AC794, value = 0x180 },            # size = 4, mask = ~0
+  # { addr = 0x80010003, size = 1, mask = 0x0F, value = 5 },
+]
+guest_cycle_scale_gated = false # also require the mod gate (custom logic)
+```
+
+No CPU is emulated. Recompiled code charges the guest clock a fixed number of
+cycles for each MIPS instruction it runs, and VBlank, timers, CD, SPU and DMA
+are scheduled against that clock. `guest_cycle_scale = N` charges each
+instruction 1/N of its cost; the devices keep hardware time. Larger N means
+the game never runs out of frame time: N times as much game code fits
+between two VBlanks. A game that paces itself on VBlank keeps its speed; one
+that busy-waits on a frame counter spins longer in host time, which is what
+the gates are for.
+
+Accounting is the same on every tier. Guest time has two entry points
+(`psx_cycles.h`): the **CPU charge** `psx_cpu_charge()` (instruction base
+cost, load fudge/region wait/completion, i-cache refills, BIOS HLE costs),
+which applies the scale, and the **device advance** `psx_advance_cycles()`
+(DMA, idle skips, mul/div and GTE deadline waits), which never does.
+Native generated code, overlay DLLs (their batched charge publishes through
+the `cpu_charge` callback into the same function), the dirty-RAM
+interpreter and the BIOS all charge CPU work through it; mul/div and GTE
+latencies are scaled where their deadline is set. At 1 the CPU charge is
+exactly the device advance and nothing else changes.
+
+Gates (all present gates must be open; with none the scale always applies):
+
+- `guest_cycle_scale_gate` — RAM predicates on aligned main-RAM words
+  (`(word & mask) == value`, `size` 1/2/4), judged at every VBlank edge, so
+  every netplay peer and every rollback re-simulation sees the same verdict.
+  Shut until the first VBlank that sees them hold. Needs no mod.
+- `guest_cycle_scale_gated = true` — a trusted plugin opens the gate with
+  `psx_mod_set_guest_cycle_scale_gate(1)` (`mod_plugins.h`) for logic a
+  predicate cannot express, or to tie the scale to a mod that must be active
+  for it (every mod session reset shuts the gate; mod plans are cleared
+  online, so a mod-gated scale stays out of netplay). With only the
+  declarative gate the scale applies online too.
+
+The carried fraction of the scaled clock and both gate states are saved in
+savestates and the netplay rollback snapshot (`boot_state` section
+`BS_SEC_GCS`, written only when the scale is not 1). A scale other than 1 is
+folded into the netplay content fingerprint, so peers that differ never
+match. `PSX_GUEST_CYCLE_SCALE=<n>` overrides the scale for testing only.
 
 ## Audit block
 

@@ -81,6 +81,9 @@ typedef struct FgCamParams {
     float    max_angle;      /* radians the camera may turn between frames */
     float    max_shift;      /* camera travel, as a share of the median depth */
     float    max_obj;        /* object pairing: |b - a| < max_obj * |b.z| */
+    int      keep_partial;   /* a view that fails leaves its vertices unchanged; the
+                              * fit is ok when any view is (reprojection) */
+    int      freeze_small_views; /* reprojection-only inset policy; off for redraw */
 } FgCamParams;
 void fg_cam_defaults(FgCamParams *p);
 
@@ -95,6 +98,7 @@ typedef struct FgView {
 
 typedef struct FgCamFit {
     int      ok;
+    int      freeze_small_views;
     const char *why;
     uint32_t nviews, prims, camera, object, neighbour, unchanged;
     uint32_t clamped;        /* fg_cam_place: vertices the in-between camera passes (frame rejected) */
@@ -135,8 +139,31 @@ void fg_cam_place(const FgPrimList *newer, FgCamFit *fit, const FgVert *verts,
  *   gen_cost_s   the cost of one generated frame, 0 when not yet measured
  *   budget       share of the interval the real and generated work may use
  * Returns 0..slots-1, where slots = round(flip_s * refresh_hz); an unknown
- * generation cost allows one frame while the real cost leaves half the
- * interval, so the cost gets measured. */
+ * generation cost allows one frame while the real cost leaves a third of the
+ * budget, so the cost gets measured. */
+/* Any-rate scheduling. fg_step_s: the interval between in-between frames
+ * of a game frame `flip_s` long with `n` of them on a `refresh_hz` display
+ * (one display interval; an even split when the refresh is unknown).
+ * fg_clock_phase: the interpolation phase (0..1) of a frame generated
+ * `since_real_ns` after the real frame was composed, shown one step later;
+ * 0 when it would land on the next real frame. */
+double fg_step_s(double flip_s, double refresh_hz, int n);
+double fg_clock_phase(uint64_t since_real_ns, uint64_t step_ns, uint64_t flip_ns);
+/* View vi's in-between camera at phase t as P_t = A P + b (row-major A). */
+int fg_view_affine(const FgCamFit *fit, int vi, double t, float A[9], float b[3]);
+void fg_hud_match(const FgPrimList *L, const FgPrimList *O, float max_px, uint8_t *moved);
+/* HUD motion between two frames' 2D triangles (frame_gen.c). */
+void fg_hud_lerp(const FgPrimList *L, const FgPrimList *O, double u, float *x, float *y,
+                 float max_px);
+/* fg_slots: display intervals a game frame `flip_s` long fills on a
+ * `refresh_hz` display as the clock (fg_clock_phase) schedules it: the
+ * in-between frames it shows plus the real one. fg_plan_hz: the refresh
+ * fg_plan sees, so its slots are exactly fg_slots. */
+int fg_slots(double flip_s, double refresh_hz);
+double fg_plan_hz(double flip_s, double refresh_hz);
+/* The next present time on the global grid after presenting at `now`. */
+uint64_t fg_next_due(uint64_t due, uint64_t now, uint64_t step_ns);
+
 int fg_plan(double flip_s, double refresh_hz, double real_cost_s,
             double gen_cost_s, double budget, int max_gens);
 
@@ -171,6 +198,7 @@ typedef struct FgCost {
     double blocked_since;/* when the estimate started keeping the plan at 0 */
     double probe_at;     /* when the probe was granted */
     double probe_s, base_probe_s, max_probe_s;
+    int    clamp_spikes; /* reprojection: one sample moves the estimate at most 4x */
 } FgCost;
 void   fg_cost_init(FgCost *c, double probe_s, double max_probe_s);
 void   fg_cost_cold(FgCost *c, int n);
