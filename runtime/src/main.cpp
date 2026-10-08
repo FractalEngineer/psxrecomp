@@ -4367,16 +4367,23 @@ static void runtime_perf_section_end(uint64_t start, uint64_t *total) {
  * maintained in production, so this only needs to expose it.
  *
  * Opt-in via PSX_FRAME_REPORT_MS (milliseconds between lines). When unset this
- * is one branch on a cached int per vblank. */
+ * is one branch on a cached int per vblank. Each line also carries the
+ * emulation thread's busy share (the window less its pacer waits and its
+ * waits on the render queue), the render thread's busy share, the dynamic
+ * resolution level and Smooth motion's generated / real presents per second. */
+static uint64_t g_frame_report_wait_ticks = 0;   /* offline pacer waits */
 static void frame_report_tick(uint64_t frames) {
     static int interval_ms = -1;
     static uint64_t first_ticks = 0, last_ticks = 0, last_frames = 0;
+    static uint64_t last_pc = 0, last_wait = 0, last_q_ns = 0, last_busy_ns = 0;
+    static uint64_t last_gen = 0, last_real = 0;
     if (interval_ms < 0) {
         const char *e = std::getenv("PSX_FRAME_REPORT_MS");
         interval_ms = (e && e[0]) ? std::atoi(e) : 0;
         if (interval_ms < 0) interval_ms = 0;
         first_ticks = last_ticks = SDL_GetTicks();
         last_frames = frames;
+        last_pc = SDL_GetPerformanceCounter();
         if (interval_ms)
             std::fprintf(stdout, "psxrecomp: frame report every %d ms\n", interval_ms);
     }
@@ -4385,15 +4392,40 @@ static void frame_report_tick(uint64_t frames) {
     if (now - last_ticks < (uint64_t)interval_ms) return;
     const double win_s = (double)(now - last_ticks) / 1000.0;
     const double all_s = (double)(now - first_ticks) / 1000.0;
+    const uint64_t pc = SDL_GetPerformanceCounter();
+    const double pc_s = (double)(pc - last_pc) / (double)SDL_GetPerformanceFrequency();
+    RtStats rs;
+    rt_get_stats(&rs);
+    const uint64_t q_ns = rs.backpressure_ns + rs.ring_full_ns + rs.acquire_ns;
+    const double wait_s = (double)(g_frame_report_wait_ticks - last_wait) /
+                              (double)SDL_GetPerformanceFrequency() +
+                          (double)(q_ns - last_q_ns) * 1e-9;
+    const double emu_busy = pc_s > 0.0 ? 100.0 * (1.0 - wait_s / pc_s) : 0.0;
+    const double rt_busy = (pc_s > 0.0 && rs.running)
+        ? 100.0 * (double)(rs.render_busy_ns - last_busy_ns) * 1e-9 / pc_s : 0.0;
+    uint64_t gen = 0, real = 0;
+    gl_renderer_frame_gen_counts(&gen, &real);
+    GlDynresStats ds;
+    gl_renderer_dynres_stats(&ds);
     std::fprintf(stdout,
-                 "psxrecomp: frames=%llu elapsed_ms=%llu fps=%.1f avg_fps=%.1f\n",
+                 "psxrecomp: frames=%llu elapsed_ms=%llu fps=%.1f avg_fps=%.1f "
+                 "emu_busy=%.1f%% render_busy=%.1f%% dynres=%d load=%.2f gen_fps=%.1f real_fps=%.1f\n",
                  (unsigned long long)frames,
                  (unsigned long long)(now - first_ticks),
                  win_s > 0.0 ? (double)(frames - last_frames) / win_s : 0.0,
-                 all_s > 0.0 ? (double)frames / all_s : 0.0);
+                 all_s > 0.0 ? (double)frames / all_s : 0.0,
+                 emu_busy, rt_busy, ds.level, g_dynres.rt.last_load,
+                 pc_s > 0.0 ? (double)(gen - last_gen) / pc_s : 0.0,
+                 pc_s > 0.0 ? (double)(real - last_real) / pc_s : 0.0);
     std::fflush(stdout);
     last_ticks = now;
     last_frames = frames;
+    last_pc = pc;
+    last_wait = g_frame_report_wait_ticks;
+    last_q_ns = q_ns;
+    last_busy_ns = rs.render_busy_ns;
+    last_gen = gen;
+    last_real = real;
 }
 
 static void runtime_perf_diag_tick() {
@@ -6954,6 +6986,29 @@ static void sample_pad_into_sio(int override) {
     }
 }
 
+/* Measurement aid, release builds included: PSX_HOLD_PADS="p1[,p2]" holds
+ * those raw pad words (active low, e.g. 0xBFFF = Cross) on ports 1 and 2
+ * after every live sample, so a headless timing run can drive a race
+ * without the debug server. Unset: one cached branch per sample. */
+static void env_pad_hold_apply(void) {
+    static int parsed = 0, n = 0;
+    static uint16_t w[2] = {0xFFFFu, 0xFFFFu};
+    if (!parsed) {
+        parsed = 1;
+        if (const char *e = std::getenv("PSX_HOLD_PADS")) {
+            unsigned a = 0xFFFFu, b = 0xFFFFu;
+            n = std::sscanf(e, "%x,%x", &a, &b);
+            if (n < 0) n = 0;
+            w[0] = (uint16_t)a; w[1] = (uint16_t)b;
+            if (n) std::fprintf(stdout, "psxrecomp: PSX_HOLD_PADS %d port(s)\n", n);
+        }
+    }
+    for (int i = 0; i < n && i < 2; i++) {
+        if (i == 1) sio_set_pad_connected(1, 1);
+        sio_set_pad_state_slot(i, w[i]);
+    }
+}
+
 static void sample_headless_pad_into_sio(int override) {
     if (override < 0) {
         uint16_t mash = 0xFFFFu;
@@ -8338,6 +8393,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             else
                 sample_pad_into_sio(override);
             apply_input_override_port2(override_p2);
+            env_pad_hold_apply();
         }
         /* Offline vblank boundary: record/replay/compare (PSX_RB_SELFCHECK).
          * Defer opening a window while multitap arming is still pending —
@@ -8642,9 +8698,11 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     if (!psx_netplay_active() && !psx_selfcheck_resim_active()) {
         uint64_t perf_start = runtime_perf_section_begin();
         if (!manual_turbo_active && !turbo_load_paced && present_should_wall_pace()) {
-            const uint64_t dyn_t0 = g_dynres.active ? SDL_GetPerformanceCounter() : 0;
+            const uint64_t dyn_t0 = SDL_GetPerformanceCounter();
             frame_pacer_wait(&s_frame_pacer, g_frame_period_ms);
-            if (dyn_t0) g_dynres.pacer_ticks += SDL_GetPerformanceCounter() - dyn_t0;
+            const uint64_t waited = SDL_GetPerformanceCounter() - dyn_t0;
+            if (g_dynres.active) g_dynres.pacer_ticks += waited;
+            g_frame_report_wait_ticks += waited;
         }
         runtime_perf_section_end(perf_start, &g_runtime_perf.pacer_ticks);
         latency_ring_mark(LAT_PACED);
@@ -8669,6 +8727,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             }
             sample_pad_into_sio(override);
             apply_input_override_port2(override_p2);
+            env_pad_hold_apply();
             latency_ring_restamp_input();
         }
     }

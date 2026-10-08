@@ -344,6 +344,8 @@ int  gl_renderer_frame_generation(void);
 void gl_renderer_frame_gen_configure(double refresh_hz, double guest_hz);
 void gl_renderer_frame_gen_hold(const char *reason, double secs);
 int  gl_renderer_frame_gen_json(char *out, int cap);
+/* Smooth motion's running totals (racy reads, for rate readouts). */
+void gl_renderer_frame_gen_counts(uint64_t *generated, uint64_t *real_presents);
 /* Host time the renderer spent, as running totals in performance-counter
  * ticks (only kept while dynamic resolution is on): waits for the frame
  * blend's next present, render passes, blend presents' own work, and time

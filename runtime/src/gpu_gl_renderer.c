@@ -11377,6 +11377,11 @@ static void fg_note_guest_frame(void) {
         atomic_store(&s_fg_late, 1);
 }
 
+void gl_renderer_frame_gen_counts(uint64_t *generated, uint64_t *real_presents) {
+    if (generated) *generated = s_fg_generated;
+    if (real_presents) *real_presents = s_fg_real_presents;
+}
+
 int gl_renderer_frame_gen_json(char *out, int cap) {
     const double now = fg_now_s();
     const int open = s_fg_brk_init ? fg_breaker_open(&s_fg_brk, now) : 1;
