@@ -8563,8 +8563,9 @@ static void handle_post_aa(int id, const char *json)
 {
     int mode = json_get_int(json, "mode", -1);
     if (mode >= 0) (void)gl_renderer_set_post_aa(mode);
-    send_fmt("{\"id\":%d,\"ok\":true,\"mode\":%d,\"passes\":%llu}", id,
-             gl_renderer_post_aa(), (unsigned long long)gl_renderer_post_aa_passes());
+    send_fmt("{\"id\":%d,\"ok\":true,\"mode\":%d,\"passes\":%llu,\"gpu_us\":%.1f}", id,
+             gl_renderer_post_aa(), (unsigned long long)gl_renderer_post_aa_passes(),
+             gl_renderer_post_aa_gpu_us());
 }
 
 static void handle_frame_perf(int id, const char *json)

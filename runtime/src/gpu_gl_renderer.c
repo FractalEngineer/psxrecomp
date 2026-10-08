@@ -1392,6 +1392,16 @@ static GLuint s_paa_prog = 0, s_paa_tex = 0;
 static int    s_paa_tw = 0, s_paa_th = 0, s_paa_failed = 0;
 static GLint  s_paa_uTex = -1, s_paa_uRcp = -1, s_paa_uUvRect = -1, s_paa_uQuality = -1;
 static uint64_t s_paa_passes = 0;
+#ifndef PSX_NO_DEBUG_TOOLS
+/* Cost of the pass (debug server post_aa), only with PSX_POST_AA_TIME=N: the
+ * pass runs N times (1..64; N > 1 re-filters the frame and amortizes the
+ * fence) bracketed by glFinish and timed on the host clock. That serializes
+ * the GPU, so it is a measurement mode, never on by default. (Timestamp
+ * queries read 0 on Apple's GL.) */
+static int    s_paa_time = -1;
+static double s_paa_gpu_us_sum = 0.0;
+static uint64_t s_paa_gpu_n = 0, s_paa_t0 = 0;
+#endif
 
 static const char *POST_AA_FS =
     "#version 330\n"
@@ -1489,6 +1499,19 @@ static void post_aa_apply(int lx, int ly, int lw, int lh) {
     } else {
         glBindTexture(GL_TEXTURE_2D, s_paa_tex);
     }
+#ifndef PSX_NO_DEBUG_TOOLS
+    if (s_paa_time < 0) {
+        const char *e = getenv("PSX_POST_AA_TIME");
+        s_paa_time = e ? atoi(e) : 0;
+        if (s_paa_time < 0) s_paa_time = 0;
+        if (s_paa_time > 64) s_paa_time = 64;
+    }
+    if (s_paa_time) { glFinish(); s_paa_t0 = SDL_GetPerformanceCounter(); }
+    const int reps = s_paa_time > 1 ? s_paa_time : 1;
+#else
+    const int reps = 1;
+#endif
+    for (int r = 0; r < reps; r++) {
     p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
     glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, lx, ly, lw, lh);
     p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
@@ -1503,8 +1526,29 @@ static void post_aa_apply(int lx, int ly, int lw, int lh) {
     glDrawArrays(GL_TRIANGLES, 0, 3);
     p_glBindVertexArray(0);
     p_glUseProgram(0);
+    }
     glBindTexture(GL_TEXTURE_2D, 0);
+#ifndef PSX_NO_DEBUG_TOOLS
+    if (s_paa_time) {
+        glFinish();
+        s_paa_gpu_us_sum += (double)(SDL_GetPerformanceCounter() - s_paa_t0) * 1e6 /
+                            (double)SDL_GetPerformanceFrequency() / (double)reps;
+        s_paa_gpu_n++;
+    }
+#endif
     s_paa_passes++;
+}
+
+/* Mean microseconds per pass since the last call (debug builds with
+ * PSX_POST_AA_TIME=N; 0 otherwise). Resets the mean. */
+double gl_renderer_post_aa_gpu_us(void) {
+#ifndef PSX_NO_DEBUG_TOOLS
+    double m = s_paa_gpu_n ? s_paa_gpu_us_sum / (double)s_paa_gpu_n : 0.0;
+    s_paa_gpu_us_sum = 0.0; s_paa_gpu_n = 0;
+    return m;
+#else
+    return 0.0;
+#endif
 }
 
 /* Present sampling. u_sharp==0 is the historical behaviour: sample straight at
