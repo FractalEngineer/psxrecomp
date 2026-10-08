@@ -5,6 +5,10 @@
 #include <stdint.h>
 #include "cpu_state.h"
 
+/* Title adapters can require support before selecting HLE execution boundaries.
+ * PSX_SAVESTATE_IMPL_TAG is a compile definition on boot_state.c, default zero. */
+#define PSX_BOOT_STATE_IMPL_TAG_VERSION 1
+
 #ifdef __cplusplus
 extern "C" {
 #endif
