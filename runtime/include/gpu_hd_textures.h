@@ -42,6 +42,9 @@ void gpu_hd_textures_set_vram(const uint16_t* vram);
 /* Move to another copy of the same native VRAM (the GL render thread's
  * private copy and gpu.c's array match at every hand-off); keeps residency. */
 void gpu_hd_textures_bind_vram(const uint16_t* vram);
+/* Smooth motion's generated frames replay real frames' draws for
+ * presentation only: their queries never dump (renderer thread). */
+void gpu_hd_textures_suppress_dumps(int on);
 /* Residency is hashed from the bound native VRAM after the write; words may
  * be NULL (a replayed upload whose payload already reached that VRAM). */
 void gpu_hd_textures_track_upload(int x, int y, int width_words, int height,

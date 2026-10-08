@@ -109,7 +109,8 @@ has measured time to spare.
 - Windowed high-resolution mode and depth24 frames are not generated.
 - HD texture replacements and dumping: generated frames draw with the same
   replacements as real frames (HUD/2D included); they are presentation only,
-  so native VRAM and dumps see only real frames.
+  so native VRAM and dumps see only real frames (generated draws suppress
+  dump queries).
 
 ## Debug
 

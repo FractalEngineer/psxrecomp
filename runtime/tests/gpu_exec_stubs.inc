@@ -375,6 +375,8 @@ uint16_t gr_vram_read(int x, int y) { (void)x; (void)y; return 0; }
 void gr_vram_transfer_in(int x, int y, int w, int h, const uint16_t *data) {
     (void)x; (void)y; (void)w; (void)h; (void)data;
 }
+void gr_vram_upload_commit(int x,int y,int w,int h,const uint16_t *d) { gr_vram_transfer_in(x,y,w,h,d); }
+void gr_vram_upload_set_open(int open) { (void)open; }
 void gr_vram_transfer_out(int x, int y, int w, int h, uint16_t *data) {
     (void)x; (void)y; (void)w; (void)h; (void)data;
 }

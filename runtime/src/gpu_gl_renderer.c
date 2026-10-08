@@ -449,10 +449,18 @@ enum {
     RTH_PRESENT_WIDE, RTH_STATE, RTH_PEEK, RTH_RING_CAPTURE, RTH_DYN_STEP,
     RTH_FRAME, RTH_FG_SRC, RTH_HD_NOTE
 };
-/* GP0(A0) whose payload gpu.c is still streaming into its array under HD
- * authority (set from the facade's residency notes on the emulation thread).
- * The emulation thread holds the context from the header to the commit. */
-static int s_rthm_open_upload_set = 0;
+/* GP0(A0) whose payload gpu.c is still streaming into its array (the
+ * facade's vram_upload_open, emulation thread), tracked whatever the HD
+ * state: under HD authority the emulation thread holds the context from the
+ * header, or from the authority switch, to the commit. A residency note
+ * (even a full-VRAM TRACK_UPLOAD) never ends it; only the commit, GP1(01h),
+ * a reset or a savestate restored outside A0 do. */
+static int s_rth_a0_open = 0;
+/* HD authority requested while an A0 streams under GPU authority: its
+ * received words exist only in gpu.c's array (the FBO gets the whole rect at
+ * the commit), so ensure_cpu's readback would overwrite them. The switch
+ * waits for the commit, which ends the upload in both copies. */
+static int s_hd_authority_pending = 0;
 
 static int  rth_record_mode(void);
 /* Render-thread frame cost (dynamic resolution; defined with GL_RT_BACKEND). */
@@ -5710,6 +5718,11 @@ void gl_renderer_set_hd_texture_mode(int on) {
     /* Drain the GPU-authoritative stream before switching authority. */
     GL_RT_SYNC("set_hd_texture_mode");
     on = on ? 1 : 0;
+    s_hd_authority_pending = 0;
+    if (on && !s_hd_native_authority && s_rth_a0_open && s_raster_ok) {
+        s_hd_authority_pending = 1;
+        return;
+    }
     if (on == s_hd_native_authority) return;
     if (s_raster_ok) {
         flush_flat_batch(); flush_tex_batch(); flush_cpu_upload(); hiw_flush_queue();
@@ -5721,7 +5734,8 @@ void gl_renderer_set_hd_texture_mode(int on) {
         }
     }
     s_hd_native_authority = on;
-    s_rthm_open_upload_set = 0;
+    /* An A0 still streaming keeps its hold (s_rth_a0_open): the context was
+     * just taken above, and eligibility keeps it until the commit. */
     /* Smooth motion restarts its lists: their draws resolve textures under
      * the authority they were recorded in. */
     s_fg_broken = 1;
@@ -9833,7 +9847,7 @@ static uint16_t rth_prim_flags(void) {
 static int gl_rth_eligible(void) {
     extern int psx_netplay_active(void);
     return s_raster_ok && s_ctx && !s_cpu_auth_dual && !s_depth24_skip_up &&
-           !(s_hd_native_authority && s_rthm_open_upload_set) &&
+           !(s_hd_native_authority && s_rth_a0_open) &&
            !gpu_display_is_depth24() && !s_interp_enabled && !s_pass_active &&
            !psx_netplay_active() && !psx_openxr_session_active() &&
            gr_backend() == GR_BACKEND_OPENGL;
@@ -10928,7 +10942,9 @@ static int fg_generate(double t, int swap) {
     rect_add(&s_stencil_stale, L->disp[0], ly, L->disp[0] + L->disp[2] - 1, ly + lh - 1);
     if (iw >= 0) wst_add(iw, 0, ly, g_wide_w, ly + lh);
     s_fg_drawing = 1;
+    gpu_hd_textures_suppress_dumps(1);   /* presentation only: dumps see real frames */
     fg_replay(NULL, L, tl, iw >= 0 ? s_fg_w_fbo : 0);
+    gpu_hd_textures_suppress_dumps(0);
     flush_line_batch();
     flush_flat_batch();
     flush_tex_batch();
@@ -11448,8 +11464,9 @@ int gl_renderer_frame_gen_json(char *out, int cap) {
 static void rtb_init(uint16_t *vram) {
     GL_RT_SYNC("init");
     if (s_rth_on) s_rth_vram_pub = vram;
-    s_rthm_open_upload_set = 0;   /* a reset abandons an incomplete A0 */
+    s_rth_a0_open = 0;   /* a reset abandons an incomplete A0 */
     glb_init(vram);
+    if (s_hd_authority_pending) gl_renderer_set_hd_texture_mode(1);
     if (s_rth_on && !rt_held()) rth_rebind_vram(s_rth_vram_priv);
 }
 static void rtb_set_scale(int sc) { GL_RT_SYNC("set_scale"); glb_set_scale(sc); }
@@ -11566,16 +11583,16 @@ static void hd_note_exec(int op, int x, int y, int w, int h, int sx, int sy) {
     }
 }
 /* After the upload/draw it follows, in command order, against s_vram. */
+static void rtb_vram_upload_open(int open) {
+    s_rth_a0_open = open;
+    if (!open && s_hd_authority_pending) gl_renderer_set_hd_texture_mode(1);
+    /* gpu.c streams the payload into its array and reads it back for
+     * mask-checked words: under HD authority take the context so that array
+     * holds every earlier native draw, and keep it until the commit
+     * (eligibility). Also when a savestate restores a state mid-A0. */
+    if (open && s_hd_native_authority) GL_RT_SYNC("hd_upload");
+}
 static void rtb_hd_texture_note(int op, int x, int y, int w, int h, int sx, int sy) {
-    if (op == GR_HD_NOTE_BEGIN_UPLOAD && s_hd_native_authority) {
-        /* gpu.c streams the payload into its array and reads it back for
-         * mask-checked words: take the context so that array holds every
-         * earlier native draw, and keep it until the commit (eligibility). */
-        GL_RT_SYNC("hd_upload");
-        s_rthm_open_upload_set = 1;
-    } else if (op == GR_HD_NOTE_TRACK_UPLOAD) {
-        s_rthm_open_upload_set = 0;
-    }
     RTH_DIRECT_OR(RTH_REC(RTH_HD_NOTE, 0, op, x, y, w, h, sx, sy)); hd_note_exec(op, x, y, w, h, sx, sy); }
 static void rtb_vram_transfer_out(int x, int y, int w, int h, uint16_t *d) {
     GL_RT_SYNC("vram_transfer_out"); glb_vram_transfer_out(x, y, w, h, d); }
@@ -11680,6 +11697,7 @@ static const GpuRenderBackend GL_RT_BACKEND = {
     .render_wide_display = rtb_render_wide_display,
     .wide_dump_full = rtb_wide_dump_full,
     .hd_texture_note = rtb_hd_texture_note,
+    .vram_upload_open = rtb_vram_upload_open,
 };
 
 /* ---- replay (render thread) ---------------------------------------------- */

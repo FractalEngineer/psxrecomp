@@ -26,7 +26,10 @@ applied against the render thread's VRAM copy. Under HD authority native VRAM
 is CPU-rasterized on that copy and published to gpu.c's array whenever the
 emulation thread takes the context and at stop. A GP0(A0) header takes the
 context and keeps it until the payload commits, so streamed words, mask
-checks and partial readbacks are exact. Smooth motion runs with HD on.
+checks and partial readbacks are exact. The open upload is tracked whatever
+the HD state, so HD turning on mid-payload, or a savestate restoring gp0
+mid-A0 (after its full-VRAM load), keeps the hold too. Generated frames do
+not dump. Smooth motion runs with HD on.
 
 ## Why
 

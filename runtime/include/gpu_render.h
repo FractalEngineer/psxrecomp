@@ -106,6 +106,12 @@ int gr_render_display_hires(uint32_t *out_pixels, int out_pitch,
 /* A0 header invalidation precedes payload writes; an interrupted transfer
  * cannot leave a prior immutable texture identity resident. */
 void gr_vram_upload_begin(int x, int y, int w, int h);
+/* The A0 payload is complete: hand the staged words to the renderer and end
+ * the open upload. */
+void gr_vram_upload_commit(int x, int y, int w, int h, const uint16_t *data);
+/* gpu.c's GP0 state says whether an A0 payload is still streaming into its
+ * array: GP1(01h) aborts one, a savestate load can restore one. */
+void gr_vram_upload_set_open(int open);
 void gr_vram_write(int x, int y, uint16_t pixel);
 uint16_t gr_vram_read(int x, int y);
 void gr_vram_transfer_in(int x, int y, int w, int h, const uint16_t *data);
@@ -218,6 +224,9 @@ typedef struct GpuRenderBackend {
      * backend's own VRAM: op GR_HD_NOTE_*; sx/sy are the copy source for
      * GR_HD_NOTE_BEGIN_COPY. NULL = apply it immediately. */
     void (*hd_texture_note)(int op, int x, int y, int w, int h, int sx, int sy);
+    /* A GP0(A0) payload is (1) or is no longer (0) streaming into gpu.c's
+     * array, whatever the HD state. NULL = the backend does not care. */
+    void (*vram_upload_open)(int open);
 } GpuRenderBackend;
 
 enum { GR_HD_NOTE_INVALIDATE = 0, GR_HD_NOTE_TRACK_UPLOAD = 1,

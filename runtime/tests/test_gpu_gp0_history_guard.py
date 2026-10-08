@@ -372,6 +372,8 @@ void gr_vram_transfer_in(int x, int y, int w, int h, const uint16_t *pixels)
         for (int xx = 0; xx < w; xx++)
             g_vram[((y + yy) & 511) * 1024 + ((x + xx) & 1023)] = pixels[yy * w + xx];
 }
+void gr_vram_upload_commit(int x,int y,int w,int h,const uint16_t *d) { gr_vram_transfer_in(x,y,w,h,d); }
+void gr_vram_upload_set_open(int open) { (void)open; }
 void gr_fill_rect(int x, int y, int w, int h, uint16_t color)
 {
     for (int yy = 0; yy < h; yy++)

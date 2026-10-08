@@ -248,7 +248,15 @@ int gr_render_display(uint32_t *o, int p, int dx, int dy, int dw, int dh) {
 int gr_render_display_hires(uint32_t *o, int p, int dx, int dy, int dw, int dh) {
     return g_b->render_display_hires(o, p, dx, dy, dw, dh);
 }
-void gr_vram_upload_begin(int x, int y, int w, int h) { hd_note(GR_HD_NOTE_BEGIN_UPLOAD, x, y, w, h, NULL); }
+void gr_vram_upload_begin(int x, int y, int w, int h) {
+    if (g_b->vram_upload_open) g_b->vram_upload_open(1);
+    hd_note(GR_HD_NOTE_BEGIN_UPLOAD, x, y, w, h, NULL);
+}
+void gr_vram_upload_commit(int x, int y, int w, int h, const uint16_t *d) {
+    gr_vram_transfer_in(x, y, w, h, d);
+    if (g_b->vram_upload_open) g_b->vram_upload_open(0);
+}
+void gr_vram_upload_set_open(int open) { if (g_b->vram_upload_open) g_b->vram_upload_open(open ? 1 : 0); }
 void gr_vram_write(int x, int y, uint16_t pixel)     { g_b->vram_write(x, y, pixel); hd_note(GR_HD_NOTE_INVALIDATE, x, y, 1, 1, NULL); }
 uint16_t gr_vram_read(int x, int y)                  { return g_b->vram_read(x, y); }
 void gr_vram_transfer_in(int x, int y, int w, int h, const uint16_t *d)  { g_b->vram_transfer_in(x, y, w, h, d); hd_note(GR_HD_NOTE_TRACK_UPLOAD, x, y, w, h, d); }
