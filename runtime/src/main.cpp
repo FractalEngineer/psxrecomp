@@ -9537,6 +9537,13 @@ extern "C" int psx_debug_toggle_key(int ch, char *out, int cap) {
     if (ch < '0' || ch > '9') return 0;
     return debug_toggle_key((int)(SDLK_0 + (ch - '0')), out, cap);
 }
+#else
+/* Release: the keys are compiled out; debug_server.c's debug_key still links. */
+extern "C" int psx_debug_toggle_key(int ch, char *out, int cap) {
+    (void)ch;
+    if (out && cap > 0) std::snprintf(out, (size_t)cap, "unavailable (debug tools not built)");
+    return 0;
+}
 #endif
 
 static void dynres_apply_level(int level) {
