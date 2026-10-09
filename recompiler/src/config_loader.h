@@ -566,6 +566,13 @@ struct RuntimeConfig {
     // fmv_chroma_smoothing: on 24-bit (MDEC) presents keep luma and smooth
     // chroma over 3x3 source pixels (hides 4:2:0 colour blocks). OpenGL only.
     bool                  video_fmv_chroma_smoothing = false;
+    // texture_lod: "off" (default) or "mipmap" — mip-level emulation for
+    // minified 3D world textures (CLUT pages have no GL mip chain; the
+    // footprint is box-averaged inside the primitive's UV bounds).
+    // anisotropic_filtering: taps along the footprint's major axis (1..16,
+    // default 1); only with texture_lod. OpenGL only.
+    int                   video_texture_lod = 0;
+    int                   video_anisotropic_filtering = 1;
     bool                  video_pgxp_color_correction = false;
     int                   video_pgxp_seam = 0;
     double                video_pgxp_depth_threshold = 4096.0;

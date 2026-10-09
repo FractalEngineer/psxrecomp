@@ -1281,6 +1281,8 @@ static int           g_video_pgxp_preserve_projection = 0;
 /* PGXP renderer features (G1.14); PSX_PGXP_DEPTH / _COLOR / _SEAM override. */
 static int           g_video_pgxp_depth_buffer = 0;
 static int           g_video_fmv_chroma = 0;   /* [video] fmv_chroma_smoothing / PSX_FMV_CHROMA */
+/* [video] texture_lod / anisotropic_filtering; PSX_TEXTURE_LOD / PSX_ANISO. */
+static int           g_video_texture_lod = 0, g_video_aniso = 1;
 static int           g_video_pgxp_color_correction = 0;
 static int           g_video_pgxp_seam = 0;
 static float         g_video_pgxp_depth_threshold = 4096.0f;
@@ -16072,6 +16074,8 @@ int main(int argc, char** argv) {
             g_video_pgxp_mod_only = gc.runtime.video_pgxp_mod_only ? 1 : 0;
             g_video_pgxp_depth_buffer = gc.runtime.video_pgxp_depth_buffer ? 1 : 0;
             g_video_fmv_chroma = gc.runtime.video_fmv_chroma_smoothing ? 1 : 0;
+            g_video_texture_lod = gc.runtime.video_texture_lod;
+            g_video_aniso = gc.runtime.video_anisotropic_filtering;
             g_video_pgxp_color_correction = gc.runtime.video_pgxp_color_correction ? 1 : 0;
             g_video_pgxp_seam = gc.runtime.video_pgxp_seam;
             g_video_pgxp_depth_threshold = (float)gc.runtime.video_pgxp_depth_threshold;
@@ -18460,6 +18464,9 @@ session_reboot:
     gl_renderer_set_pgxp_depth(g_video_pgxp_depth_buffer);
     if (const char* e = std::getenv("PSX_FMV_CHROMA")) g_video_fmv_chroma = (*e && *e != '0');
     gl_renderer_set_fmv_chroma_smoothing(g_video_fmv_chroma);
+    if (const char* e = std::getenv("PSX_TEXTURE_LOD")) g_video_texture_lod = std::atoi(e);
+    if (const char* e = std::getenv("PSX_ANISO")) g_video_aniso = std::atoi(e);
+    gl_renderer_set_texture_lod(g_video_texture_lod, g_video_aniso);
     gl_renderer_set_pgxp_color_perspective(g_video_pgxp_color_correction);
     gl_renderer_set_pgxp_seam(g_video_pgxp_seam);
     if (const char* e = std::getenv("PSX_PGXP_DEPTH_THRESHOLD")) g_video_pgxp_depth_threshold = (float)std::atof(e);
