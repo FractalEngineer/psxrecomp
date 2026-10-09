@@ -1280,6 +1280,7 @@ static int           g_video_pgxp_position_fallback   = 1;
 static int           g_video_pgxp_preserve_projection = 0;
 /* PGXP renderer features (G1.14); PSX_PGXP_DEPTH / _COLOR / _SEAM override. */
 static int           g_video_pgxp_depth_buffer = 0;
+static int           g_video_fmv_chroma = 0;   /* [video] fmv_chroma_smoothing / PSX_FMV_CHROMA */
 static int           g_video_pgxp_color_correction = 0;
 static int           g_video_pgxp_seam = 0;
 static float         g_video_pgxp_depth_threshold = 4096.0f;
@@ -9192,6 +9193,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
          * right-edge jump the old comment describes is 0 with filtering on.
          * Set video AA off to get nearest back. */
         gl_renderer_set_fmv_filter(g_video_fmv_filter);
+        gl_renderer_note_present_depth24(depth24_frame ? 1 : 0);
         gl_renderer_present(sdl_pixel_buf, src_w, src_h,
                             g_video_aa ? 1 : 0,
                             pin_43 ? 1 : 0, 0 /* full width */);
@@ -16069,6 +16071,7 @@ int main(int argc, char** argv) {
                 gc.runtime.video_pgxp_preserve_projection ? 1 : 0;
             g_video_pgxp_mod_only = gc.runtime.video_pgxp_mod_only ? 1 : 0;
             g_video_pgxp_depth_buffer = gc.runtime.video_pgxp_depth_buffer ? 1 : 0;
+            g_video_fmv_chroma = gc.runtime.video_fmv_chroma_smoothing ? 1 : 0;
             g_video_pgxp_color_correction = gc.runtime.video_pgxp_color_correction ? 1 : 0;
             g_video_pgxp_seam = gc.runtime.video_pgxp_seam;
             g_video_pgxp_depth_threshold = (float)gc.runtime.video_pgxp_depth_threshold;
@@ -18455,6 +18458,8 @@ session_reboot:
     if (const char* e = std::getenv("PSX_PGXP_COLOR")) g_video_pgxp_color_correction = (*e && *e != '0');
     if (const char* e = std::getenv("PSX_PGXP_SEAM")) g_video_pgxp_seam = std::atoi(e);
     gl_renderer_set_pgxp_depth(g_video_pgxp_depth_buffer);
+    if (const char* e = std::getenv("PSX_FMV_CHROMA")) g_video_fmv_chroma = (*e && *e != '0');
+    gl_renderer_set_fmv_chroma_smoothing(g_video_fmv_chroma);
     gl_renderer_set_pgxp_color_perspective(g_video_pgxp_color_correction);
     gl_renderer_set_pgxp_seam(g_video_pgxp_seam);
     if (const char* e = std::getenv("PSX_PGXP_DEPTH_THRESHOLD")) g_video_pgxp_depth_threshold = (float)std::atof(e);

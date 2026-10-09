@@ -563,6 +563,9 @@ struct RuntimeConfig {
     // pgxp_depth_buffer) to close T-junction cracks above 1x ("off",
     // "fine" = 1 output px, "wide" = half a native px).
     bool                  video_pgxp_depth_buffer = false;
+    // fmv_chroma_smoothing: on 24-bit (MDEC) presents keep luma and smooth
+    // chroma over 3x3 source pixels (hides 4:2:0 colour blocks). OpenGL only.
+    bool                  video_fmv_chroma_smoothing = false;
     bool                  video_pgxp_color_correction = false;
     int                   video_pgxp_seam = 0;
     double                video_pgxp_depth_threshold = 4096.0;
