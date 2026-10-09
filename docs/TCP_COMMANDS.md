@@ -483,9 +483,9 @@ between Play and TCP availability.
 
 ## Complete command index (generated)
 
-**363 commands registered** — 350 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**365 commands registered** — 352 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-75 of 363 have prose above; **288 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+78 of 365 have prose above; **287 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -754,7 +754,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `run_to_frame` | ✓ |  | ✓ |
 | `s3_smear_watch` | ✓ |  | ✓ |
 | `savestate` | ✓ |  |  |
-| `savestate_status` | ✓ |  |  |
+| `savestate_status` | ✓ |  | ✓ |
 | `scanline` | ✓ |  | ✓ |
 | `screenshot` | ✓ | ✓ | ✓ |
 | `screenshot_file` | ✓ | ✓ | ✓ |
@@ -772,12 +772,12 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `sio_irq_window` | ✓ |  |  |
 | `sio_pc_trace` | ✓ |  |  |
 | `sio_pc_window` | ✓ |  |  |
-| `snapshot_status` | ✓ |  |  |
 | `sio_state` | ✓ |  | ✓ |
 | `sio_trace` | ✓ | ✓ |  |
 | `sio_trace_reset` |  | ✓ |  |
 | `sio_trace_window` | ✓ |  |  |
 | `sio_write_window` |  | ✓ |  |
+| `snapshot_status` | ✓ |  | ✓ |
 | `sp_ring` | ✓ |  |  |
 | `spu_events` | ✓ | ✓ |  |
 | `spu_events_reset` | ✓ |  |  |
