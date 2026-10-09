@@ -66,8 +66,9 @@ function(psxrecomp_select_guest_implementation)
     endforeach()
 
     set(_identity "${CMAKE_CURRENT_BINARY_DIR}/guest-implementations/${IMPL_NAME}.c")
-    file(GENERATE OUTPUT "${_identity}" CONTENT
-        "#include \"mod_plugins.h\"\n#include <stdio.h>\nPSX_MOD_CONSTRUCTOR(psx_impl_${IMPL_NAME}) { fprintf(stdout, \"psxrecomp guest implementation: ${IMPL_NAME}=${IMPL_IMPLEMENTATION}\\n\"); }\n")
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/guest-implementations")
+    file(CONFIGURE OUTPUT "${_identity}" CONTENT
+        "#include \"mod_plugins.h\"\n#include <stdio.h>\nPSX_MOD_CONSTRUCTOR(psx_impl_${IMPL_NAME}) { fprintf(stdout, \"psxrecomp guest implementation: ${IMPL_NAME}=${IMPL_IMPLEMENTATION}\\n\"); }\n" @ONLY)
     foreach(_target IN LISTS IMPL_TARGETS)
         if(NOT TARGET ${_target})
             message(FATAL_ERROR "${IMPL_NAME}: unknown target ${_target}")
