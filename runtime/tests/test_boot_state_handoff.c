@@ -9,6 +9,10 @@ static uint16_t vram[1024*512];
 static int boot_clears, cd_handoffs;
 uint32_t i_stat, i_mask, g_psx_icache_tv[1024];
 uint64_t psx_cycle_count;
+uint32_t g_psx_gcs_frac;
+uint32_t psx_guest_cycle_scale_config(void) { return 1; }
+void psx_guest_cycle_scale_snapshot(uint32_t out[3]) { memset(out,0,12); }
+void psx_guest_cycle_scale_restore(const uint32_t in[3]) { (void)in; }
 uint8_t* memory_get_ram_ptr(void) { return ram; }
 uint32_t memory_get_ram_bytes(void) { return sizeof ram; }
 uint8_t* memory_get_scratchpad_ptr(void) { return spad; }
@@ -68,6 +72,16 @@ int main(void) {
         /* Malformed, missing and duplicate phase sections must reject before
          * changing CPU, RAM or the previously active handoff latch. */
         cpu.pc=0xdeadbeef; ram[0x100]=0x55; fntrace_restore_game_started(!started);
+        /* A different build-selected implementation must reject atomically,
+         * including when its only difference is an HLE execution boundary. */
+        PstR key_reader; uint32_t implementation_key;
+        pst_r_init(&key_reader, saved + 24, 4);
+        assert(pst_r_u32(&key_reader, &implementation_key));
+        assert(implementation_key == BOOT_STATE_IMPLEMENTATION_KEY);
+        u32(saved + 24, implementation_key ^ 0x54474801u);
+        assert(!boot_state_load_buffer(saved,len,123,0x801b0000,&cpu));
+        assert(cpu.pc==0xdeadbeef && ram[0x100]==0x55 && fntrace_is_game_started()==!started);
+        u32(saved + 24, implementation_key);
         saved[len-4]=2;
         assert(!boot_state_load_buffer(saved,len,123,0x801b0000,&cpu));
         saved[len-4]=started;

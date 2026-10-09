@@ -7,6 +7,7 @@
 #include "cpu_state.h"
 #include "psx_memory.h"
 #include "interrupts.h"
+#include "mod_runtime.h"
 #include "psx_bss.h"
 #include "psx_runtime.h"   /* fix B: psx_exc_escape_reason_t + g_exc_escape_reason */
 #include "debug_server.h"
@@ -813,6 +814,10 @@ void psx_scheduler_run(CPUState* cpu)
     for (;;) {
         if (setjmp(g_scheduler_jmpbuf) != 0) {
             psx_snapshot_host_call_reset();
+            /* The jump also abandoned mod callbacks. Their native epilogues
+             * cannot clear the snapshot gate or restore callback ownership. */
+            const ModFunctionEntryContext no_callback = {0};
+            mod_runtime_function_entry_context_restore(&no_callback);
             /* A structured escape unwound the native stack to here. Reset the
              * invariants the skipped psx_dispatch_impl frames would otherwise
              * own. No exception_jmpbuf frame is ever skipped (switch fires only

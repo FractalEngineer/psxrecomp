@@ -29,6 +29,17 @@ int main(void) {
     check(psx_irq_resume_context_snapshot_safe_at(pc), "scheduler escape releases abandoned scope");
     psx_snapshot_host_call_end(); /* no underflow */
     check(psx_irq_resume_context_snapshot_safe_at(pc), "unmatched end stays safe");
+    psx_snapshot_host_call_begin();
+    const unsigned outer_depth = psx_snapshot_host_call_depth();
+    jmp_buf handler;
+    if (setjmp(handler) == 0) {
+        psx_snapshot_host_call_begin();
+        longjmp(handler, 1); /* handler adapter's cleanup is skipped */
+    }
+    psx_snapshot_host_call_restore(outer_depth);
+    check(!psx_irq_resume_context_snapshot_safe_at(pc), "exception preserves live outer adapter");
+    psx_snapshot_host_call_end();
+    check(psx_irq_resume_context_snapshot_safe_at(pc), "outer adapter returns without a leaked gate");
     check(!psx_irq_resume_context_snapshot_safe_at(pc + 4), "existing resume-PC guard retained");
     g_call_unit_depth = 1;
     check(!psx_irq_resume_context_snapshot_safe_at(pc), "existing call-unit guard retained");

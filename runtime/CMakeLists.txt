@@ -118,6 +118,13 @@ if(BUILD_TESTING)
         target_link_options(boot_state_handoff_test PRIVATE -flto -Wl,--gc-sections)
         target_link_libraries(boot_state_handoff_test PRIVATE ZLIB::ZLIB)
         add_test(NAME boot_state_handoff_test COMMAND boot_state_handoff_test)
+        add_executable(boot_state_impl_tag_test tests/test_boot_state_handoff.c)
+        target_include_directories(boot_state_impl_tag_test PRIVATE include src)
+        target_compile_definitions(boot_state_impl_tag_test PRIVATE PSX_COSIM=1 PSX_SAVESTATE_IMPL_TAG=0x54474801u)
+        target_compile_options(boot_state_impl_tag_test PRIVATE -O2 -flto -ffunction-sections -fdata-sections -UNDEBUG)
+        target_link_options(boot_state_impl_tag_test PRIVATE -flto -Wl,--gc-sections)
+        target_link_libraries(boot_state_impl_tag_test PRIVATE ZLIB::ZLIB)
+        add_test(NAME boot_state_impl_tag_test COMMAND boot_state_impl_tag_test)
 
         add_executable(static_match_cache_test tests/test_static_match_cache.c
             src/overlay_loader.c src/crc32.c)
@@ -151,6 +158,11 @@ if(BUILD_TESTING)
     set(PSX_GL_READBACK_COMPILER_BIN "${_gl_test_default_bin}" CACHE PATH "GCC/MinGW bin for GL fixture")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME guest_implementation_binding_test COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_guest_implementation.py"
+            --cmake "${CMAKE_COMMAND}" --compiler "${CMAKE_C_COMPILER}"
+            --generator "${CMAKE_GENERATOR}"
+            --work-root "${CMAKE_CURRENT_BINARY_DIR}/hle-binding-fixtures")
         add_test(NAME host_launch_timings_protocol_test COMMAND ${CMAKE_COMMAND} -E env
             "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}" "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_host_launch_timings_protocol.py")

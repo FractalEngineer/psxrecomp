@@ -25,6 +25,9 @@
 #include "psx_cyc.h"
 
 static ModFunctionEntryContext s_mod_entry;
+static unsigned s_host_call_depth;
+unsigned psx_snapshot_host_call_depth(void) { return s_host_call_depth; }
+void psx_snapshot_host_call_restore(unsigned depth) { s_host_call_depth = depth; }
 void mod_runtime_function_entry_context_save(ModFunctionEntryContext *out) {
     *out = s_mod_entry;
 }
@@ -251,8 +254,12 @@ static void guest_frame(CPUState *cpu, const Frames *f, int level) {
     uint32_t prev_ov_ip = s_ov_inprogress;
     void (*prev_flush)(void) = g_overlay_flush_pending_cycles;
     ModFunctionEntryContext prev_mod = s_mod_entry;
+    const unsigned prev_host_call = s_host_call_depth;
+    s_host_call_depth++;
     s_mod_entry.depth++;
     s_mod_entry.plugin = f;
+    s_mod_entry.cpu = cpu;
+    s_mod_entry.finished = !s_mod_entry.finished;
     (void)guard;
     psx_cyc_bb_defer_begin();
     g_call_unit_depth = prev_unit + 1;          /* overlay_loader_call_native */
@@ -282,6 +289,7 @@ static void guest_frame(CPUState *cpu, const Frames *f, int level) {
     }
 
     s_mod_entry = prev_mod;
+    s_host_call_depth = prev_host_call;
     s_ld.armed = 0;                              /* retired on interpreter exit */
     g_precise_mode = prev_precise;
     g_dirty_interp_active = prev_active;
@@ -353,6 +361,7 @@ static int stereo_draw(struct CPUState *cpu, void *user, uint32_t eye) {
 
 typedef struct Live {
     ModFunctionEntryContext mod_entry;
+    unsigned host_call_depth;
     int bb_defer, unit, dma, host, dma_ch, active, phase, precise, dispatch;
     int ov_depth;
     uint32_t ov_ip, batch, resume, span_lo, span_hi;
@@ -364,6 +373,7 @@ typedef struct Live {
 static void snap(Live *l) {
     memset(l, 0, sizeof *l);
     l->mod_entry = s_mod_entry;
+    l->host_call_depth = s_host_call_depth;
     l->bb_defer = g_psx_cyc_bb_defer;
     l->unit = g_call_unit_depth;
     l->dma = g_dma_exec_depth;
@@ -395,6 +405,9 @@ static void check_live(const Live *a, const char *when) {
         CHECK(a->field == b.field, m); } while (0)
     SAME(mod_entry.depth, "mod callback depth");
     SAME(mod_entry.plugin, "mod callback owner");
+    SAME(mod_entry.cpu, "mod callback CPU");
+    SAME(mod_entry.finished, "mod callback completion");
+    SAME(host_call_depth, "host adapter depth");
     SAME(bb_defer, "g_psx_cyc_bb_defer");
     SAME(unit, "g_call_unit_depth");
     SAME(dma, "g_dma_exec_depth");
@@ -442,6 +455,9 @@ int main(void) {
      * the interpreter's resume latch and a pending load of its own. */
     s_mod_entry.depth = 1;
     s_mod_entry.plugin = &cpu;
+    s_mod_entry.cpu = &cpu;
+    s_mod_entry.finished = 1;
+    s_host_call_depth = 2;
     g_psx_cyc_bb_defer = 2;
     g_psx_cyc_batch = 9;
     g_psx_dispatch_depth = 3;

@@ -3068,12 +3068,16 @@ extern "C" int psx_mod_function_entry_active(void) {
 extern "C" void mod_runtime_function_entry_context_save(ModFunctionEntryContext *out) {
     out->depth = PSXRecompV4::function_entry_depth;
     out->plugin = PSXRecompV4::state().current_plugin;
+    out->cpu = PSXRecompV4::state().current_function_cpu;
+    out->finished = PSXRecompV4::state().current_function_finished;
 }
 
 extern "C" void mod_runtime_function_entry_context_restore(const ModFunctionEntryContext *in) {
     PSXRecompV4::function_entry_depth = in->depth;
     PSXRecompV4::state().current_plugin =
         static_cast<const PSXRecompV4::ModResolution::Plugin *>(in->plugin);
+    PSXRecompV4::state().current_function_cpu = in->cpu;
+    PSXRecompV4::state().current_function_finished = in->finished != 0;
 }
 
 /* Apply the committed plan's disc writes and overlays to one sector. The

@@ -39,6 +39,9 @@
 #include "timers.h"
 
 static ModFunctionEntryContext s_mod_entry;
+static unsigned s_host_call_depth;
+unsigned psx_snapshot_host_call_depth(void) { return s_host_call_depth; }
+void psx_snapshot_host_call_restore(unsigned depth) { s_host_call_depth = depth; }
 void mod_runtime_function_entry_context_save(ModFunctionEntryContext *out) {
     *out = s_mod_entry;
 }

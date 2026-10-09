@@ -30,6 +30,7 @@
 #include "gpu_gl_renderer.h"
 #include "mod_plugins.h"
 #include "mod_runtime.h"
+#include "interrupts.h"
 #include "overlay_loader.h"
 #include "psx_icache.h"
 #include "timers.h"
@@ -124,6 +125,7 @@ typedef struct RenderPassNesting {
     uint32_t ov_inprogress;
     void   (*ov_flush)(void);
     ModFunctionEntryContext mod_entry;
+    unsigned snapshot_host_call_depth;
     PSXModRenderView render_pose;
     uint32_t span_lo, span_hi;       /* open guest span (dirty_ram_run_span) */
 } RenderPassNesting;
@@ -144,6 +146,7 @@ static void nesting_save(RenderPassNesting *n) {
     overlay_loader_native_nesting(&n->ov_active_depth, &n->ov_inprogress);
     n->ov_flush = g_overlay_flush_pending_cycles;
     mod_runtime_function_entry_context_save(&n->mod_entry);
+    n->snapshot_host_call_depth = psx_snapshot_host_call_depth();
     gte_render_pose_get(&n->render_pose);
     dirty_ram_span_get(&n->span_lo, &n->span_hi);
 }
@@ -164,6 +167,7 @@ static void nesting_restore(const RenderPassNesting *n) {
     overlay_loader_set_native_nesting(n->ov_active_depth, n->ov_inprogress);
     g_overlay_flush_pending_cycles = n->ov_flush;
     mod_runtime_function_entry_context_restore(&n->mod_entry);
+    psx_snapshot_host_call_restore(n->snapshot_host_call_depth);
     gte_render_pose_set(&n->render_pose);
     dirty_ram_span_set(n->span_lo, n->span_hi);
 }
@@ -185,7 +189,10 @@ static int nesting_balanced(const RenderPassNesting *n) {
            now.ov_flush == n->ov_flush &&
            now.span_lo == n->span_lo && now.span_hi == n->span_hi &&
            now.mod_entry.depth == n->mod_entry.depth &&
-           now.mod_entry.plugin == n->mod_entry.plugin;
+           now.mod_entry.plugin == n->mod_entry.plugin &&
+           now.mod_entry.cpu == n->mod_entry.cpu &&
+           now.mod_entry.finished == n->mod_entry.finished &&
+           now.snapshot_host_call_depth == n->snapshot_host_call_depth;
 }
 
 /* After a watchdog abort, before the restore: which exits the longjmp
@@ -223,6 +230,11 @@ static int nesting_describe(const RenderPassNesting *n, int bb_defer_ck,
     RP_NOTE(now.mod_entry.depth != n->mod_entry.depth, "mod entries %+d",
             (int)now.mod_entry.depth - (int)n->mod_entry.depth);
     RP_NOTE(now.mod_entry.plugin != n->mod_entry.plugin, "mod owner");
+    RP_NOTE(now.mod_entry.cpu != n->mod_entry.cpu ||
+            now.mod_entry.finished != n->mod_entry.finished, "mod completion context");
+    RP_NOTE(now.snapshot_host_call_depth != n->snapshot_host_call_depth,
+            "host adapter depth %u->%u", n->snapshot_host_call_depth,
+            now.snapshot_host_call_depth);
     RP_NOTE(now.span_hi != n->span_hi, "guest span");
 #undef RP_NOTE
     return count;
